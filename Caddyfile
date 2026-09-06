@@ -1,0 +1,24 @@
+{$DOMAIN:localhost} {
+    # API и Django admin
+    handle /api/* {
+        reverse_proxy backend:8000
+    }
+    handle /admin/* {
+        reverse_proxy backend:8000
+    }
+    handle /static/* {
+        root * /srv
+        file_server
+    }
+    handle /media/* {
+        root * /srv
+        file_server
+    }
+    # PWA frontend — всё остальное
+    handle {
+        root * /srv/app
+        try_files {path} /index.html
+        file_server
+    }
+    encode gzip
+}

@@ -1,0 +1,21 @@
+// app global css in SCSS form
+body {
+  font-family: 'Roboto', sans-serif;
+}
+
+.page-padding {
+  padding: 16px;
+}
+
+.full-width-card {
+  width: 100%;
+}
+
+.debt-amount {
+  color: var(--q-negative);
+  font-weight: bold;
+}
+
+.paid-amount {
+  color: var(--q-positive);
+}
