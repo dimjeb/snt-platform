@@ -1,0 +1,101 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-snt}
+      POSTGRES_USER: ${POSTGRES_USER:-snt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-snt}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DJANGO_SETTINGS_MODULE: snt.settings.prod
+      DATABASE_URL: postgres://${POSTGRES_USER:-snt}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-snt}
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./backend:/app
+      - media:/app/media
+      - static:/app/static
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             gunicorn snt.wsgi:application --bind 0.0.0.0:8000 --workers 4"
+
+  celery:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DJANGO_SETTINGS_MODULE: snt.settings.prod
+      DATABASE_URL: postgres://${POSTGRES_USER:-snt}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-snt}
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./backend:/app
+      - media:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: celery -A snt worker -l info
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    volumes:
+      - frontdist:/app/dist
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+      - static:/srv/static
+      - media:/srv/media
+      - frontdist:/srv/app
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  pgdata:
+  redisdata:
+  media:
+  static:
+  frontdist:
+  caddy_data:
+  caddy_config:

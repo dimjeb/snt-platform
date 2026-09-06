@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+*.so
+.venv/
+venv/
+env/
+.env
+!.env.example
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+media/
+
+# Node / Vue / Quasar
+node_modules/
+frontend/dist/
+frontend/.quasar/
+frontend/src-capacitor/
+frontend/src-cordova/
+.DS_Store
+
+# Docker
+*.override.yml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
