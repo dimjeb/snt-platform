@@ -1,4 +1,4 @@
-{$DOMAIN:localhost} {
+{$DOMAIN::80} {
     # API и Django admin
     handle /api/* {
         reverse_proxy backend:8000
@@ -14,9 +14,9 @@
         root * /srv
         file_server
     }
-    # PWA frontend — всё остальное
+    # SPA frontend — всё остальное
     handle {
-        root * /srv/app
+        root * /srv/www
         try_files {path} /index.html
         file_server
     }
