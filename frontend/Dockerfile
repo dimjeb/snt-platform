@@ -7,4 +7,4 @@ RUN npm run build
 
 # Финальный образ — просто файлы для Caddy
 FROM scratch
-COPY --from=builder /app/dist/pwa /
+COPY --from=builder /app/dist/spa /
