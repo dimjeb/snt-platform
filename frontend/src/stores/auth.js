@@ -8,6 +8,9 @@ export const useAuthStore = defineStore('auth', {
     accessToken: localStorage.getItem('access') || null,
     refreshToken: localStorage.getItem('refresh') || null,
     user: JSON.parse(localStorage.getItem('user') || 'null'),
+    // Для суперадмина: выбранная организация
+    selectedOrgId: localStorage.getItem('selectedOrgId') || null,
+    selectedOrgName: localStorage.getItem('selectedOrgName') || null,
   }),
 
   getters: {
@@ -15,6 +18,9 @@ export const useAuthStore = defineStore('auth', {
     isChairman: (s) => s.user?.role === 'chairman' || s.user?.role === 'superadmin',
     isTreasurer: (s) => ['chairman', 'treasurer', 'superadmin'].includes(s.user?.role),
     isMember: (s) => s.user?.role === 'member',
+    isSuperAdmin: (s) => s.user?.role === 'superadmin',
+    // Есть ли активный контекст организации
+    hasOrg: (s) => !!(s.user?.organization || s.selectedOrgId),
   },
 
   actions: {
@@ -43,10 +49,25 @@ export const useAuthStore = defineStore('auth', {
       localStorage.setItem('user', JSON.stringify(data))
     },
 
+    setOrg(id, name) {
+      this.selectedOrgId = String(id)
+      this.selectedOrgName = name
+      localStorage.setItem('selectedOrgId', String(id))
+      localStorage.setItem('selectedOrgName', name)
+    },
+
+    clearOrg() {
+      this.selectedOrgId = null
+      this.selectedOrgName = null
+      localStorage.removeItem('selectedOrgId')
+      localStorage.removeItem('selectedOrgName')
+    },
+
     logout() {
       this.accessToken = null
       this.refreshToken = null
       this.user = null
+      this.clearOrg()
       localStorage.removeItem('access')
       localStorage.removeItem('refresh')
       localStorage.removeItem('user')

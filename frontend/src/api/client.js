@@ -1,5 +1,5 @@
 /**
- * Axios-клиент с автоматическим проставлением JWT и обновлением токена.
+ * Axios-клиент с автоматическим проставлением JWT, X-Org-ID и обновлением токена.
  */
 import axios from 'axios'
 import { useAuthStore } from 'stores/auth'
@@ -9,11 +9,16 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-// Прокидываем токен
+// Прокидываем токен и X-Org-ID
 api.interceptors.request.use((config) => {
   const auth = useAuthStore()
   if (auth.accessToken) {
     config.headers.Authorization = `Bearer ${auth.accessToken}`
+  }
+  // Для суперадмина — выбранная организация через заголовок
+  const orgId = auth.selectedOrgId || auth.user?.organization
+  if (orgId) {
+    config.headers['X-Org-ID'] = orgId
   }
   return config
 })
