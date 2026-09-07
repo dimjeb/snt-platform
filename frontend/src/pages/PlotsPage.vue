@@ -213,18 +213,30 @@ async function loadMembers() {
     const { data } = await api.get('/members/short/')
     membersAll.value = data
     memberOptions.value = data
-  } catch {
-    // не критично — select просто будет пустым
+  } catch (e) {
+    $q.notify({ type: 'negative', message: 'Не удалось загрузить список членов' })
   }
 }
 
 function filterMembers(val, update) {
-  update(() => {
-    const q = val.toLowerCase()
-    memberOptions.value = q
-      ? membersAll.value.filter((m) => m.full_name.toLowerCase().includes(q))
-      : membersAll.value
-  })
+  if (membersAll.value.length === 0) {
+    // Список ещё не загружен — ждём, потом фильтруем
+    loadMembers().then(() => {
+      update(() => {
+        const q = val.toLowerCase()
+        memberOptions.value = q
+          ? membersAll.value.filter((m) => m.full_name.toLowerCase().includes(q))
+          : membersAll.value
+      })
+    })
+  } else {
+    update(() => {
+      const q = val.toLowerCase()
+      memberOptions.value = q
+        ? membersAll.value.filter((m) => m.full_name.toLowerCase().includes(q))
+        : membersAll.value
+    })
+  }
 }
 
 async function load() {
