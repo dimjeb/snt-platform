@@ -29,9 +29,18 @@ if [ ! -f .env ]; then
   cp .env.example .env
   SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(50))")
   SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
+  # Ask for domain name (optional)
+  read -rp "Domain name (leave blank to use IP only): " DOMAIN_NAME
+  if [ -n "$DOMAIN_NAME" ]; then
+    HOSTS="${SERVER_IP},${DOMAIN_NAME},localhost,127.0.0.1"
+    CORS_ORIGINS="http://${SERVER_IP},http://${DOMAIN_NAME},https://${DOMAIN_NAME}"
+  else
+    HOSTS="${SERVER_IP},localhost,127.0.0.1"
+    CORS_ORIGINS="http://${SERVER_IP}"
+  fi
   sed -i "s|^DJANGO_SECRET_KEY=.*|DJANGO_SECRET_KEY=${SECRET}|" .env
-  sed -i "s|^ALLOWED_HOSTS=.*|ALLOWED_HOSTS=${SERVER_IP},localhost,127.0.0.1|" .env
-  sed -i "s|^CORS_ALLOWED_ORIGINS=.*|CORS_ALLOWED_ORIGINS=http://${SERVER_IP}|" .env
+  sed -i "s|^ALLOWED_HOSTS=.*|ALLOWED_HOSTS=${HOSTS}|" .env
+  sed -i "s|^CORS_ALLOWED_ORIGINS=.*|CORS_ALLOWED_ORIGINS=${CORS_ORIGINS}|" .env
   sed -i "s|^DEBUG=.*|DEBUG=False|" .env
   echo ".env created"
 fi
