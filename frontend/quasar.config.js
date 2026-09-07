@@ -1,7 +1,7 @@
 /* eslint-env node */
-const { configure } = require('quasar/wrappers')
+import { configure } from 'quasar/wrappers'
 
-module.exports = configure(function (/* ctx */) {
+export default configure(function (/* ctx */) {
   return {
     boot: ['pinia'],
 

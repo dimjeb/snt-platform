@@ -2,6 +2,7 @@
   "name": "snt-platform-frontend",
   "version": "0.1.0",
   "description": "SNT Platform — мобильное PWA приложение",
+  "type": "module",
   "scripts": {
     "dev": "quasar dev",
     "build": "quasar build",
