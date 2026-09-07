@@ -25,6 +25,9 @@ media/
 node_modules/
 frontend/.quasar/
 # dist/spa is committed (pre-built for slow servers)
+!frontend/dist/
+!frontend/dist/spa/
+!frontend/dist/spa/**
 frontend/src-capacitor/
 frontend/src-cordova/
 .DS_Store
