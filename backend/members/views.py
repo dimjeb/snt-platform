@@ -1,9 +1,16 @@
 from rest_framework import viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 from core.permissions import IsTreasurer, IsOrgMember, OrgQuerysetMixin
 from .models import Member, Plot, PlotOwnership
-from .serializers import MemberSerializer, PlotSerializer, PlotOwnershipSerializer
+from .serializers import (
+    MemberSerializer,
+    MemberShortSerializer,
+    PlotSerializer,
+    PlotOwnershipSerializer,
+)
 
 
 class MemberViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
@@ -15,12 +22,22 @@ class MemberViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     ordering_fields = ["last_name", "joined_at"]
 
     def get_permissions(self):
-        if self.action in ("list", "retrieve"):
+        if self.action in ("list", "retrieve", "short"):
             return [IsOrgMember()]
         return [IsTreasurer()]
 
     def perform_create(self, serializer):
         serializer.save(organization=self.request.org)
+
+    @action(detail=False, methods=["get"], url_path="short")
+    def short(self, request):
+        """Компактный список членов для select/autocomplete (без пагинации)."""
+        qs = self.get_queryset().order_by("last_name", "first_name")
+        search = request.query_params.get("search", "")
+        if search:
+            qs = qs.filter(last_name__icontains=search) | qs.filter(first_name__icontains=search)
+        serializer = MemberShortSerializer(qs[:200], many=True)
+        return Response(serializer.data)
 
 
 class PlotViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
