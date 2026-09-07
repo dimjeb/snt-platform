@@ -23,8 +23,8 @@ media/
 
 # Node / Vue / Quasar
 node_modules/
-frontend/dist/
 frontend/.quasar/
+# dist/spa is committed (pre-built for slow servers)
 frontend/src-capacitor/
 frontend/src-cordova/
 .DS_Store
