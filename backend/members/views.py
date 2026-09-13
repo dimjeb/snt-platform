@@ -14,7 +14,9 @@ from .serializers import (
 
 
 class MemberViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
-    queryset = Member.objects.all()
+    # Сериализатор отдаёт current_plots, поэтому владения с участками
+    # подтягиваем сразу — иначе запрос на каждого члена.
+    queryset = Member.objects.prefetch_related("ownerships__plot")
     serializer_class = MemberSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ["status"]

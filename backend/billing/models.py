@@ -100,6 +100,14 @@ class Charge(OrgModel):
 
     @property
     def paid_amount(self):
+        # Когда платежи подтянуты через prefetch_related, считаем в памяти:
+        # aggregate() всегда идёт в базу, и на списке из сотни начислений
+        # это оборачивалось сотней запросов поверх уже загруженных данных.
+        if "payments" in getattr(self, "_prefetched_objects_cache", {}):
+            return sum(
+                (p.amount for p in self.payments.all() if not p.is_cancelled),
+                Decimal("0"),
+            )
         return self.payments.filter(
             is_cancelled=False
         ).aggregate(total=models.Sum("amount"))["total"] or Decimal("0")

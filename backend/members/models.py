@@ -43,10 +43,15 @@ class Member(OrgModel):
 
     @property
     def plots(self):
-        return Plot.objects.filter(
-            ownerships__member=self,
-            ownerships__date_to__isnull=True,
-        )
+        """
+        Текущие участки члена.
+
+        Список, а не queryset: обход подтянутых ownerships позволяет
+        вьюсету снять N+1 через prefetch_related("ownerships__plot").
+        Отдельный запрос на каждого члена превращал страницу реестра
+        из 50 строк в полсотни лишних обращений к базе.
+        """
+        return [o.plot for o in self.ownerships.all() if o.date_to is None]
 
 
 class Plot(OrgModel):
@@ -70,8 +75,16 @@ class Plot(OrgModel):
 
     @property
     def current_owner(self):
-        ownership = self.ownerships.filter(date_to__isnull=True).first()
-        return ownership.member if ownership else None
+        # Фильтруем в памяти, а не через .filter(): тот создаёт новый
+        # queryset и ходит в базу отдельно на каждый участок, сводя на нет
+        # prefetch_related("ownerships__member") во вьюсете. На странице
+        # из 50 участков это давало сотню лишних запросов.
+        # Порядок ownerships — "-date_from", поэтому первое открытое
+        # владение и есть текущее.
+        for ownership in self.ownerships.all():
+            if ownership.date_to is None:
+                return ownership.member
+        return None
 
 
 class PlotOwnership(OrgModel):
