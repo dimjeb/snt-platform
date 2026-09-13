@@ -1,4 +1,12 @@
-{$DOMAIN::80} {
+# DOMAIN не задан — берём боевой домен: Caddy сам выпустит сертификат.
+# Прежнее значение {$DOMAIN::80} поднимало сайт на голом 80 порту без TLS.
+{$DOMAIN:snt-platforma.ru} {
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    header X-Content-Type-Options "nosniff"
+    header X-Frame-Options "SAMEORIGIN"
+    header Referrer-Policy "strict-origin-when-cross-origin"
+    header -Server
+
     # API и Django admin
     handle /api/* {
         reverse_proxy backend:8000

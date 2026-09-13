@@ -175,3 +175,8 @@ CORS_ALLOWED_ORIGINS = config(
     "CORS_ALLOWED_ORIGINS",
     default="http://localhost:9000,http://localhost:8080",
 ).split(",")
+
+# ─── CSRF / Proxy ─────────────────────────────────────────────────────────────
+CSRF_TRUSTED_ORIGINS = config(
+    "CSRF_TRUSTED_ORIGINS", default="http://localhost"
+).split(",")
