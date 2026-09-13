@@ -22,8 +22,10 @@ class MemberViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     ordering_fields = ["last_name", "joined_at"]
 
     def get_permissions(self):
-        if self.action in ("list", "retrieve", "short"):
-            return [IsOrgMember()]
+        # Реестр членов — только председателю и казначею. Роутер фронтенда
+        # закрывает раздел «Члены» для роли member, но это защита лишь на
+        # клиенте: с токеном рядового члена список выгружался запросом
+        # напрямую, вместе с телефонами и email (152-ФЗ).
         return [IsTreasurer()]
 
     def perform_create(self, serializer):
@@ -51,6 +53,45 @@ class PlotViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
         if self.action in ("list", "retrieve"):
             return [IsOrgMember()]
         return [IsTreasurer()]
+
+    def get_queryset(self):
+        """
+        Участки, доступные текущему пользователю.
+
+        В filter_backends нет DjangoFilterBackend, поэтому ?member= раньше
+        молча игнорировался: личный кабинет запрашивал свои участки, а получал
+        первые попавшиеся по СНТ и брал results[0] — то есть участок №1.
+        Член мог передать показания в чужой счётчик.
+
+        Связь участка с членом идёт через PlotOwnership, прямого FK нет,
+        поэтому фильтр собран вручную по открытому владению.
+        """
+        qs = super().get_queryset()
+        user = self.request.user
+
+        # Член СНТ видит только свои участки: в выдаче есть current_owner
+        # с ФИО, и раскрывать его всему товариществу не следует.
+        if getattr(user, "role", None) == user.ROLE_MEMBER:
+            if user.member_id:
+                qs = qs.filter(
+                    ownerships__member_id=user.member_id,
+                    ownerships__date_to__isnull=True,
+                )
+            else:
+                qs = qs.none()
+
+        member = self.request.query_params.get("member")
+        if member:
+            try:
+                member_id = int(member)
+            except (TypeError, ValueError):
+                return qs.none()
+            qs = qs.filter(
+                ownerships__member_id=member_id,
+                ownerships__date_to__isnull=True,
+            )
+
+        return qs.distinct()
 
     def perform_create(self, serializer):
         serializer.save(organization=self.request.org)

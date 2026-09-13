@@ -159,7 +159,11 @@ async function calculate() {
     // Запускаем расчёт через action счётчика
     const mainMeter = meters.value.find((m) => m.is_main)
     if (!mainMeter) { $q.notify({ type: 'warning', message: 'Не найден главный счётчик' }); return }
-    await api.post(`/electricity/meters/${mainMeter.id}/calculate/`, { period_id: pid, period_date: `${year}-${month}-01` })
+    // action объявлен detail=False, поэтому маршрут без id счётчика
+    await api.post('/electricity/meters/calculate/', {
+      billing_period_id: pid,
+      period_date: `${year}-${month}-01`,
+    })
     $q.notify({ type: 'positive', message: 'Расчёт выполнен, начисления обновлены' })
   } catch (e) {
     $q.notify({ type: 'negative', message: e.response?.data?.detail || 'Ошибка расчёта' })
