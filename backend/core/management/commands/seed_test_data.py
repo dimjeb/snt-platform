@@ -145,12 +145,18 @@ class Command(BaseCommand):
 
         if options["clear"]:
             self.stdout.write("Удаляю тестовые данные...")
-            test_usernames = []
-            for o in ORGS:
-                test_usernames.append(o["chairman"][0])
-                test_usernames.append(o["treasurer"][0])
-            User.objects.filter(username__in=test_usernames).delete()
-            Organization.objects.filter(name__in=[o["name"] for o in ORGS]).delete()
+            test_orgs = Organization.objects.filter(
+                name__in=[o["name"] for o in ORGS]
+            )
+            # Payment.charge и Charge.plot/period/charge_type объявлены PROTECT,
+            # поэтому каскад от Organization на них спотыкается — сносим вручную
+            # в порядке зависимостей, до удаления самих организаций.
+            Payment.objects.filter(organization__in=test_orgs).delete()
+            Charge.objects.filter(organization__in=test_orgs).delete()
+            # Пользователи организаций (председатель, казначей, member_<org_id>):
+            # User.organization — SET_NULL, каскадом они бы не удалились.
+            User.objects.filter(organization__in=test_orgs).delete()
+            test_orgs.delete()
             self.stdout.write(self.style.SUCCESS("Тестовые данные удалены."))
             # продолжаем — ниже данные будут созданы заново
 
@@ -172,6 +178,7 @@ class Command(BaseCommand):
         # ------------------------------------------------------------------- #
         #  Организации                                                         #
         # ------------------------------------------------------------------- #
+        created_member_logins = {}
         for org_data in ORGS:
             org, created = Organization.objects.get_or_create(
                 name=org_data["name"],
@@ -343,10 +350,11 @@ class Command(BaseCommand):
             # --------------------------------------------------------------- #
             #  Электроэнергия                                                  #
             # --------------------------------------------------------------- #
+            tariff_value = Decimal("4.8500")
             EnergyTariff.objects.create(
                 organization=org,
                 valid_from=date(2024, 1, 1),
-                price_per_kwh=Decimal("4.8500"),
+                price_per_kwh=tariff_value,
                 notes="Тариф с 01.01.2024",
             )
 
@@ -360,7 +368,7 @@ class Command(BaseCommand):
             MeterReading.objects.create(
                 organization=org,
                 meter=main_meter,
-                read_at=date(2024, 8, 1),
+                date=date(2024, 8, 1),
                 value=Decimal(str(random.randint(80000, 120000))),
                 notes="Показание главного счётчика",
             )
@@ -378,45 +386,67 @@ class Command(BaseCommand):
                     installed_at=date(random.randint(2015, 2022), 1, 1),
                 )
                 prev_val = Decimal(str(random.randint(500, 8000)))
+                consumed = Decimal(str(random.randint(50, 350)))
                 MeterReading.objects.create(
                     organization=org,
                     meter=meter,
-                    read_at=date(2024, 7, 1),
+                    date=date(2024, 7, 1),
                     value=prev_val,
                     notes="",
                 )
                 MeterReading.objects.create(
                     organization=org,
                     meter=meter,
-                    read_at=date(2024, 8, 1),
-                    value=prev_val + Decimal(str(random.randint(50, 350))),
+                    date=date(2024, 8, 1),
+                    value=prev_val + consumed,
                     notes="",
+                )
+                # Начисление за электроэнергию по разнице показаний
+                Charge.objects.create(
+                    organization=org,
+                    plot=plot,
+                    charge_type=ct_electricity,
+                    period=period,
+                    amount=(consumed * tariff_value).quantize(Decimal("0.01")),
+                    description="Электроэнергия: 07.2024 → 08.2024",
+                    kwh=consumed,
+                    tariff=tariff_value,
                 )
 
             self.stdout.write(self.style.SUCCESS(
-                f"  ✓ Электроэнергия: тариф + {len(plots_with_meters)} счётчиков"
+                f"  ✓ Электроэнергия: тариф + {len(plots_with_meters)} счётчиков "
+                f"и начислений"
             ))
 
             # --------------------------------------------------------------- #
             #  Один пользователь-член (для тестирования личного кабинета)     #
             # --------------------------------------------------------------- #
-            test_member = random.choice(active_members[:10])
-            member_username = f"member_{org.id}"
-            User.objects.create_user(
-                username=member_username,
-                password="12345678",
-                first_name=test_member.first_name,
-                last_name=test_member.last_name,
-                email=f"{member_username}@snt-platforma.ru",
-                phone=test_member.phone,
-                role=User.ROLE_MEMBER,
-                organization=org,
-                member=test_member,
-            )
-            self.stdout.write(self.style.SUCCESS(
-                f"  ✓ Член-пользователь: {member_username} / 12345678 "
-                f"({test_member.last_name} {test_member.first_name})"
-            ))
+            if not active_members:
+                self.stdout.write(self.style.WARNING(
+                    "  ! Действующих членов нет — пользователь-член не создан"
+                ))
+            else:
+                test_member = random.choice(active_members[:10])
+                # Суффикс берём из логина председателя (chairman_berezka → berezka),
+                # чтобы логин члена не зависел от org.id: тот меняется после --clear.
+                org_slug = ch_username.split("_", 1)[1]
+                member_username = f"member_{org_slug}"
+                User.objects.create_user(
+                    username=member_username,
+                    password="12345678",
+                    first_name=test_member.first_name,
+                    last_name=test_member.last_name,
+                    email=f"{member_username}@snt-platforma.ru",
+                    phone=test_member.phone,
+                    role=User.ROLE_MEMBER,
+                    organization=org,
+                    member=test_member,
+                )
+                self.stdout.write(self.style.SUCCESS(
+                    f"  ✓ Член-пользователь: {member_username} / 12345678 "
+                    f"({test_member.last_name} {test_member.first_name})"
+                ))
+                created_member_logins[org.name] = member_username
 
         # ------------------------------------------------------------------- #
         #  Итог                                                                #
@@ -428,5 +458,7 @@ class Command(BaseCommand):
         for o in ORGS:
             self.stdout.write(f"  {o['chairman'][0]:30s} / 12345678  — председатель {o['name']}")
             self.stdout.write(f"  {o['treasurer'][0]:30s} / 12345678  — казначей {o['name']}")
-            self.stdout.write(f"  member_<org_id>                   / 12345678  — член {o['name']}")
+            member_login = created_member_logins.get(o["name"])
+            if member_login:
+                self.stdout.write(f"  {member_login:30s} / 12345678  — член {o['name']}")
         self.stdout.write("\nURL: http://snt-platforma.ru/\n")

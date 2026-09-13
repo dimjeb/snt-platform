@@ -32,8 +32,7 @@ CHAIRMAN   = {"username": "chairman_berezka", "password": "12345678",
                "org": "СНТ «Берёзка»"}
 TREASURER  = {"username": "treasurer_berezka", "password": "12345678",
                "org": "СНТ «Берёзка»"}
-MEMBER_ORG_ID = 1   # id первой org; замени если отличается
-MEMBER     = {"username": f"member_{MEMBER_ORG_ID}", "password": "12345678"}
+MEMBER     = {"username": "member_berezka", "password": "12345678"}
 
 PASS = "✅"
 FAIL = "❌"
