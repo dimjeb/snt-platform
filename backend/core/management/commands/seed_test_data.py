@@ -170,6 +170,10 @@ class Command(BaseCommand):
                 password="12345678",
                 first_name="Супер",
                 last_name="Администратор",
+                # create_superuser роль не выставляет, а фронт определяет
+                # суперадмина именно по role: без этого admin в интерфейсе
+                # выглядит рядовым членом СНТ.
+                role=User.ROLE_SUPERADMIN,
             )
             self.stdout.write(self.style.SUCCESS("✓ Суперадмин admin / 12345678"))
         else:
