@@ -18,6 +18,15 @@ class MemberSerializer(serializers.ModelSerializer):
             for p in obj.plots
         ]
 
+    def to_internal_value(self, data):
+        # Пустая строка в незаполненной необязательной дате — обычный идиом
+        # HTML-формы, но DateField в DRF её отвергает с 400. Приводим к null,
+        # чтобы это не было тонкостью, которую обязан знать каждый клиент.
+        if hasattr(data, "get") and data.get("joined_at") == "":
+            data = data.copy()
+            data["joined_at"] = None
+        return super().to_internal_value(data)
+
 
 class MemberShortSerializer(serializers.ModelSerializer):
     """Компактное представление для списков выбора (select)."""

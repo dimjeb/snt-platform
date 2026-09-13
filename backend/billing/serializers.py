@@ -41,15 +41,13 @@ class ChargeSerializer(serializers.ModelSerializer):
 
 
 class BulkMembershipChargeSerializer(serializers.Serializer):
-    """Запрос на массовое создание членских взносов."""
-    period_id = serializers.IntegerField()
+    """Запрос на массовое создание членских взносов. Период — из URL."""
     amount = serializers.DecimalField(max_digits=12, decimal_places=2)
     description = serializers.CharField(max_length=500, required=False, default="")
 
 
 class BulkTargetChargeSerializer(serializers.Serializer):
-    """Запрос на создание целевых взносов."""
-    period_id = serializers.IntegerField()
+    """Запрос на создание целевых взносов. Период — из URL."""
     charge_type_id = serializers.IntegerField()
     amount = serializers.DecimalField(max_digits=12, decimal_places=2)
     plot_ids = serializers.ListField(

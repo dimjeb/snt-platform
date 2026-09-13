@@ -78,17 +78,24 @@ def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
     return len(charges)
 
 
-def get_debt_summary(organization):
+def get_debt_summary(organization, period=None):
     """
     Возвращает список словарей с долгами по каждому участку.
+
+    period — если задан, учитываются только начисления этого расчётного
+    периода. Без него сводка идёт по всем начислениям организации:
+    так её вызывает генератор отчётов (reports/generators.py).
     """
-    from django.db.models import Sum, F, ExpressionWrapper, DecimalField
-    from django.db.models.functions import Coalesce
+    from django.db.models import Prefetch
+
+    charges_qs = Charge.objects.prefetch_related("payments")
+    if period is not None:
+        charges_qs = charges_qs.filter(period=period)
 
     plots = (
         Plot.objects.filter(organization=organization)
         .prefetch_related(
-            "charges__payments",
+            Prefetch("charges", queryset=charges_qs),
             "ownerships__member",
         )
     )

@@ -23,6 +23,7 @@ Playwright — пользовательские истории SNT Платфо�
 
 import os
 import random
+import time
 from datetime import datetime, date
 from playwright.sync_api import sync_playwright, Page
 
@@ -59,6 +60,16 @@ def log(name: str, ok: bool, detail: str = ""):
 # =========================================================================== #
 
 def login(page: Page, creds: dict):
+    # Ошибки страницы копим, чтобы упавший вход было чем объяснять:
+    # по одному таймауту навигации причину не восстановить.
+    problems: list[str] = []
+    page.on("console", lambda m: problems.append(f"console:{m.type}:{m.text[:110]}")
+            if m.type == "error" else None)
+    page.on("requestfailed", lambda r: problems.append(f"запрос не удался: {r.url[:90]}"))
+    page.on("response", lambda r: problems.append(f"HTTP {r.status} {r.url[:90]}")
+            if r.status >= 400 else None)
+    page._snt_problems = problems
+
     page.goto(f"{BASE_URL}/login", wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
     settle(page)
     page.fill("input[aria-label='Логин'], input[placeholder*='огин']", creds["username"])
@@ -121,10 +132,26 @@ def dialog_input(page: Page, label: str):
     )
 
 
-def stat_value(page: Page, caption: str) -> str:
-    """Число из карточки дашборда по подписи под ним."""
-    loc = page.locator(f'.q-card:has(.text-caption:text-is("{caption}")) .text-h5')
-    return loc.first.inner_text().strip()
+def stat_value(page: Page, caption: str, timeout: int = 15000) -> str:
+    """
+    Число из карточки дашборда по подписи под ним.
+
+    Карточка рендерится сразу с нулём из начального состояния хранилища
+    (stats = ref({members: 0, ...})), а данные приезжают отдельным запросом
+    в onMounted. networkidle на SPA ненадёжен: сразу после router.push
+    сеть уже тиха, и значение успевало прочитаться до ответа API.
+    Поэтому ждём появления ненулевого значения, а если его так и нет —
+    возвращаем что есть, и проверка честно падает.
+    """
+    loc = page.locator(f'.q-card:has(.text-caption:text-is("{caption}")) .text-h5').first
+    deadline = time.time() + timeout / 1000
+    value = ""
+    while time.time() < deadline:
+        value = loc.inner_text().strip()
+        if value and value != "0":
+            return value
+        page.wait_for_timeout(300)
+    return value
 
 
 def row_count(page: Page, empty_text: str) -> int:
@@ -165,7 +192,8 @@ def story_chairman(page: Page):
         login(page, CHAIRMAN)
         log("Председатель: вход в систему", True)
     except Exception as e:
-        log("Председатель: вход в систему", False, str(e)[:200])
+        log("Председатель: вход в систему", False,
+            f"{str(e)[:130]} | {'; '.join(getattr(page, '_snt_problems', [])[-4:]) or 'ошибок страницы нет'}")
         return
 
     # 1.1 Дашборд. networkidle — чтобы дождаться onMounted-запросов,
@@ -307,13 +335,17 @@ def story_treasurer(page: Page):
         login(page, TREASURER)
         log("Казначей: вход в систему", True)
     except Exception as e:
-        log("Казначей: вход в систему", False, str(e)[:200])
+        log("Казначей: вход в систему", False,
+            f"{str(e)[:130]} | {'; '.join(getattr(page, '_snt_problems', [])[-4:]) or 'ошибок страницы нет'}")
         return
 
     try:
         settle(page)
         members = stat_value(page, "Членов")
-        log("Казначей: дашборд", members.isdigit(), f"членов: {members}")
+        # isdigit() проходил и на нуле, из-за чего сломанный дашборд
+        # показывался зелёным. Ждём реальные данные seed.
+        ok = members.isdigit() and int(members) > 0
+        log("Казначей: дашборд", ok, f"членов: {members}")
     except Exception as e:
         log("Казначей: дашборд", False, str(e)[:200])
 
@@ -382,7 +414,8 @@ def story_member(page: Page):
         login(page, MEMBER)
         log("Член СНТ: вход в систему", True)
     except Exception as e:
-        log("Член СНТ: вход в систему", False, str(e)[:200])
+        log("Член СНТ: вход в систему", False,
+            f"{str(e)[:130]} | {'; '.join(getattr(page, '_snt_problems', [])[-4:]) or 'ошибок страницы нет'}")
         return
 
     # 3.1 Управленческая статистика скрыта
@@ -447,7 +480,8 @@ def story_superadmin(page: Page):
         login(page, SUPERADMIN)
         log("Суперадмин: вход в систему", True)
     except Exception as e:
-        log("Суперадмин: вход в систему", False, str(e)[:200])
+        log("Суперадмин: вход в систему", False,
+            f"{str(e)[:130]} | {'; '.join(getattr(page, '_snt_problems', [])[-4:]) or 'ошибок страницы нет'}")
         return
 
     # 4.1 Видит все организации
