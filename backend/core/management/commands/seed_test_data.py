@@ -2,8 +2,11 @@
 Заполнение тестовыми данными для локальной разработки и демонстрации.
 
 Запуск:
-    docker compose exec backend python manage.py seed_test_data
-    docker compose exec backend python manage.py seed_test_data --clear
+    seed_test_data            создать тестовые данные
+    seed_test_data --reset    удалить и создать заново (для прогона тестов)
+    seed_test_data --clear    только удалить и выйти (очистка боевой базы)
+
+Удаление строго ограничено организациями из ORGS — чужие СНТ не затрагиваются.
 """
 
 import random
@@ -132,7 +135,12 @@ class Command(BaseCommand):
         parser.add_argument(
             "--clear",
             action="store_true",
-            help="Перед заполнением удалить все тестовые данные",
+            help="Только удалить тестовые данные и выйти (для очистки боевой базы)",
+        )
+        parser.add_argument(
+            "--reset",
+            action="store_true",
+            help="Удалить тестовые данные и создать заново",
         )
 
     @transaction.atomic
@@ -143,10 +151,14 @@ class Command(BaseCommand):
         from billing.models import ChargeType, BillingPeriod, Charge, Payment
         from electricity.models import EnergyTariff, Meter, MeterReading
 
-        if options["clear"]:
+        if options["clear"] or options["reset"]:
             self.stdout.write("Удаляю тестовые данные...")
             test_orgs = Organization.objects.filter(
                 name__in=[o["name"] for o in ORGS]
+            )
+            self.stdout.write(
+                f"  под удаление попадают организации: "
+                f"{', '.join(test_orgs.values_list('name', flat=True)) or 'нет'}"
             )
             # Payment.charge и Charge.plot/period/charge_type объявлены PROTECT,
             # поэтому каскад от Organization на них спотыкается — сносим вручную
@@ -158,7 +170,20 @@ class Command(BaseCommand):
             User.objects.filter(organization__in=test_orgs).delete()
             test_orgs.delete()
             self.stdout.write(self.style.SUCCESS("Тестовые данные удалены."))
-            # продолжаем — ниже данные будут созданы заново
+
+            # Показываем, что осталось: удаление строго ограничено тремя
+            # именами из ORGS, чужие организации не затрагиваются — и это
+            # должно быть видно из вывода, а не приниматься на веру.
+            rest = list(
+                Organization.objects.exclude(name__in=[o["name"] for o in ORGS])
+                .values_list("name", flat=True)
+            )
+            self.stdout.write(
+                f"  остались нетронутыми: {', '.join(rest) if rest else 'других организаций нет'}"
+            )
+
+            if options["clear"]:
+                return
 
         # ------------------------------------------------------------------- #
         #  Суперадмин                                                          #

@@ -27,7 +27,7 @@ TEST_FILE="$HERE/playwright_user_stories.py"
 if [[ "${SKIP_SEED:-0}" != "1" ]]; then
   echo "==> Обновляю код и пересеваю данные на $SERVER"
   ssh "$SERVER" "cd '$REMOTE_DIR' && git pull -q && \
-    docker compose exec -T backend python manage.py seed_test_data --clear 2>&1 | tail -20"
+    docker compose exec -T backend python manage.py seed_test_data --reset 2>&1 | tail -20"
   echo
 fi
 
