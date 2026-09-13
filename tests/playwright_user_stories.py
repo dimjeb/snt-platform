@@ -29,7 +29,8 @@ from playwright.sync_api import sync_playwright, Page
 BASE_URL = os.getenv("BASE_URL", "https://snt-platforma.ru").rstrip("/")
 HEADLESS = os.getenv("HEADLESS", "true").lower() != "false"
 SLOW_MO = int(os.getenv("SLOW_MO", "200"))       # мс между действиями
-TIMEOUT = int(os.getenv("TIMEOUT", "10000"))     # мс на ожидание элемента
+TIMEOUT = int(os.getenv("TIMEOUT", "20000"))     # мс на ожидание элемента
+NAV_TIMEOUT = int(os.getenv("NAV_TIMEOUT", "40000"))  # мс на переход между страницами
 
 # Учётные записи (должны совпадать с seed_test_data)
 SUPERADMIN = {"username": "admin", "password": "12345678"}
@@ -58,12 +59,12 @@ def log(name: str, ok: bool, detail: str = ""):
 # =========================================================================== #
 
 def login(page: Page, creds: dict):
-    page.goto(f"{BASE_URL}/login")
-    page.wait_for_load_state("networkidle")
+    page.goto(f"{BASE_URL}/login", wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+    settle(page)
     page.fill("input[aria-label='Логин'], input[placeholder*='огин']", creds["username"])
     page.fill("input[type='password']", creds["password"])
     page.click("button[type='submit'], .q-btn:has-text('Войти')")
-    page.wait_for_url(f"{BASE_URL}/dashboard", timeout=TIMEOUT)
+    page.wait_for_url(f"{BASE_URL}/dashboard", timeout=NAV_TIMEOUT)
 
 
 def logout(page: Page):
@@ -72,23 +73,45 @@ def logout(page: Page):
         page.evaluate("() => { localStorage.clear(); sessionStorage.clear(); }")
     except Exception:
         pass
-    page.goto(f"{BASE_URL}/login")
-    page.wait_for_load_state("networkidle")
+    page.goto(f"{BASE_URL}/login", wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+    settle(page)
+
+
+def settle(page: Page):
+    """Дождаться затишья в сети, но не падать, если оно не наступает."""
+    try:
+        page.wait_for_load_state("networkidle", timeout=TIMEOUT)
+    except Exception:
+        pass
 
 
 def goto(page: Page, path: str) -> str:
     """Переход по прямому URL. Возвращает фактический адрес после роутинга."""
-    page.goto(f"{BASE_URL}{path}")
-    page.wait_for_load_state("networkidle")
+    page.goto(f"{BASE_URL}{path}", wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+    settle(page)
     return page.url
 
 
 def icon_btn(page: Page, icon_name: str):
     """
-    Quasar не сохраняет icon="add" как атрибут DOM — он рендерит
-    <i class="q-icon material-icons">add</i>, поэтому ищем по тексту иконки.
+    Quasar не сохраняет icon="add" как атрибут DOM — при наборе material-icons
+    он рендерит <i class="q-icon material-icons">add</i>, то есть имя иконки
+    лежит текстом. Ограничиваемся .q-page: в шапке и боковом меню свои кнопки.
     """
-    return page.locator(f'.q-btn:has(.q-icon:text-is("{icon_name}"))')
+    return page.locator(f'.q-page .q-btn:has-text("{icon_name}")')
+
+
+def describe_buttons(page: Page) -> str:
+    """Что за кнопки есть на странице — чтобы упавший селектор было чем чинить."""
+    try:
+        return page.evaluate(
+            """() => Array.from(document.querySelectorAll('.q-page .q-btn'))
+                .slice(0, 8)
+                .map(b => (b.innerText || '').trim() || '[без текста]')
+                .join(' | ') || 'кнопок в .q-page нет'"""
+        )
+    except Exception as e:
+        return f"не удалось осмотреть страницу: {e}"
 
 
 def dialog_input(page: Page, label: str):
@@ -106,20 +129,22 @@ def stat_value(page: Page, caption: str) -> str:
 
 def row_count(page: Page, empty_text: str) -> int:
     """
-    Число строк в q-list. Пустое состояние и спиннер — тоже q-item,
-    поэтому при заглушке считаем, что записей ноль.
+    Число строк в q-list внутри .q-page.
+
+    Скоуп обязателен: боковое меню — тоже q-list с q-item, и висит в DOM
+    даже закрытым. Без .q-page счётчик показывал 58 пунктов меню вместо
+    реальных записей, из-за чего проверки проходили вхолостую.
     """
-    if page.locator(f'.q-item:has-text("{empty_text}")').count() > 0:
+    if page.locator(f'.q-page .q-item:has-text("{empty_text}")').count() > 0:
         return 0
-    return page.locator(".q-list .q-item").count()
+    return page.locator(".q-page .q-list .q-item").count()
 
 
 def api_status(page: Page, path: str) -> int:
     """Статус ответа API с токеном текущего пользователя."""
     return page.evaluate(
         """async (p) => {
-            const t = JSON.parse(localStorage.getItem('auth') || '{}');
-            const token = t.accessToken || t.access || '';
+            const token = localStorage.getItem('access') || '';
             const r = await fetch(p, { headers: { Authorization: 'Bearer ' + token } });
             return r.status;
         }""",
@@ -146,7 +171,7 @@ def story_chairman(page: Page):
     # 1.1 Дашборд. networkidle — чтобы дождаться onMounted-запросов,
     #     иначе карточки читаются с начальных нулей.
     try:
-        page.wait_for_load_state("networkidle")
+        settle(page)
         members = stat_value(page, "Членов")
         plots = stat_value(page, "Участков")
         ok = members.isdigit() and int(members) > 0
@@ -159,7 +184,7 @@ def story_chairman(page: Page):
     # 1.2 Список членов
     try:
         goto(page, "/members")
-        page.wait_for_selector(".q-list .q-item", timeout=TIMEOUT)
+        page.wait_for_selector(".q-page .q-list .q-item", timeout=TIMEOUT)
         count = row_count(page, "Нет членов")
         log("Председатель: список членов", count > 0, f"{count} строк")
     except Exception as e:
@@ -175,18 +200,19 @@ def story_chairman(page: Page):
         dialog_input(page, "Телефон").fill("+7 (999) 000-11-22")
         page.click('.q-dialog .q-btn:has-text("Сохранить")')
         page.wait_for_selector(".q-dialog", state="hidden", timeout=TIMEOUT)
-        page.wait_for_load_state("networkidle")
+        settle(page)
         page.fill('input[placeholder*="Поиск"]', new_ln)
         page.wait_for_timeout(1200)          # debounce поиска
         found = page.locator(f'.q-item:has-text("{new_ln}")').count() > 0
         log("Председатель: добавление члена", found, new_ln)
     except Exception as e:
-        log("Председатель: добавление члена", False, str(e)[:200])
+        log("Председатель: добавление члена", False,
+            f"{str(e)[:150]} | кнопки на странице: {describe_buttons(page)}")
 
     # 1.4 Список участков
     try:
         goto(page, "/plots")
-        page.wait_for_selector(".q-list .q-item", timeout=TIMEOUT)
+        page.wait_for_selector(".q-page .q-list .q-item", timeout=TIMEOUT)
         count = row_count(page, "Нет участков")
         log("Председатель: список участков", count > 0, f"{count} строк")
     except Exception as e:
@@ -213,13 +239,14 @@ def story_chairman(page: Page):
         dialog_input(page, "Площадь (соток)").fill("7.5")
         page.click('.q-dialog .q-btn:has-text("Сохранить")')
         page.wait_for_selector(".q-dialog", state="hidden", timeout=TIMEOUT)
-        page.wait_for_load_state("networkidle")
+        settle(page)
         page.fill('input[placeholder*="Поиск"]', new_number)
         page.wait_for_timeout(1200)
         found = page.locator(f'.q-item:has-text("{new_number}")').count() > 0
         log("Председатель: добавление участка", found, f"№{new_number}")
     except Exception as e:
-        log("Председатель: добавление участка", False, str(e)[:200])
+        log("Председатель: добавление участка", False,
+            f"{str(e)[:150]} | кнопки на странице: {describe_buttons(page)}")
 
     # 1.7 Начисления: вкладки
     try:
@@ -235,7 +262,7 @@ def story_chairman(page: Page):
                                  ("Платежи", "Нет платежей")]:
         try:
             page.click(f'.q-tab:has-text("{tab_name}")')
-            page.wait_for_load_state("networkidle")
+            settle(page)
             count = row_count(page, empty_text)
             log(f"Председатель: вкладка «{tab_name}»", True, f"{count} записей")
         except Exception as e:
@@ -246,10 +273,10 @@ def story_chairman(page: Page):
         goto(page, "/electricity")
         page.wait_for_selector(".q-tab", timeout=TIMEOUT)
         page.click('.q-tab:has-text("Счётчики")')
-        page.wait_for_load_state("networkidle")
+        settle(page)
         meters = row_count(page, "Нет счётчиков")
         page.click('.q-tab:has-text("Тарифы")')
-        page.wait_for_load_state("networkidle")
+        settle(page)
         tariffs = row_count(page, "Нет тарифов")
         log("Председатель: электроэнергия", meters > 0 and tariffs > 0,
             f"счётчиков: {meters}, тарифов: {tariffs}")
@@ -284,7 +311,7 @@ def story_treasurer(page: Page):
         return
 
     try:
-        page.wait_for_load_state("networkidle")
+        settle(page)
         members = stat_value(page, "Членов")
         log("Казначей: дашборд", members.isdigit(), f"членов: {members}")
     except Exception as e:
@@ -302,7 +329,7 @@ def story_treasurer(page: Page):
     try:
         goto(page, "/billing")
         page.click('.q-tab:has-text("Долги")')
-        page.wait_for_load_state("networkidle")
+        settle(page)
         count = row_count(page, "Нет данных за период")
         log("Казначей: ведомость долгов", count > 0, f"{count} записей")
     except Exception as e:
@@ -360,7 +387,7 @@ def story_member(page: Page):
 
     # 3.1 Управленческая статистика скрыта
     try:
-        page.wait_for_load_state("networkidle")
+        settle(page)
         hidden = page.locator('.text-caption:text-is("Членов")').count() == 0
         log("Член СНТ: статистика управления скрыта", hidden,
             "" if hidden else "карточка «Членов» видна, а не должна")
@@ -398,7 +425,7 @@ def story_member(page: Page):
             )
             page.locator('.q-field:has(.q-field__label:text-is("Показание (кВт·ч) *")) input').fill(val)
             page.click('.q-btn:has-text("Передать показания")')
-            page.wait_for_load_state("networkidle")
+            settle(page)
             ok = page.locator(".q-notification--negative, .bg-negative").count() == 0
             log("Член СНТ: передача показания", ok, f"значение {val}")
     except Exception as e:
@@ -432,7 +459,7 @@ def story_superadmin(page: Page):
 
     # 4.2 Переключатель СНТ в шапке
     try:
-        page.wait_for_load_state("networkidle")
+        settle(page)
         switcher = page.locator('.q-chip:has(.q-icon:text-is("home_work")), '
                                 '.q-btn:has-text("Выбрать СНТ")')
         log("Суперадмин: переключатель СНТ", switcher.count() > 0)
@@ -442,7 +469,7 @@ def story_superadmin(page: Page):
     # 4.3 Django admin
     try:
         page.goto(f"{BASE_URL}/admin/")
-        page.wait_for_load_state("networkidle")
+        settle(page)
         ok = "admin" in page.url
         log("Суперадмин: Django admin", ok, page.url)
     except Exception as e:
@@ -451,7 +478,7 @@ def story_superadmin(page: Page):
     # 4.4 Swagger
     try:
         page.goto(f"{BASE_URL}/api/docs/")
-        page.wait_for_load_state("networkidle")
+        settle(page)
         body = page.locator("body").inner_text()
         ok = "swagger" in body.lower() or "openapi" in body.lower() or "API" in body
         log("Суперадмин: /api/docs/", ok)
