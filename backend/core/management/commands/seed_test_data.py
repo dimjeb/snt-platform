@@ -301,7 +301,7 @@ class Command(BaseCommand):
                     organization=org,
                     ownerships__date_to__isnull=True,
                     ownerships__member__status="active",
-                ).select_related("ownerships__member").distinct()
+                ).distinct()
             )
             for plot in active_plots:
                 # Членский взнос
