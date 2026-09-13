@@ -152,7 +152,7 @@ class Command(BaseCommand):
             User.objects.filter(username__in=test_usernames).delete()
             Organization.objects.filter(name__in=[o["name"] for o in ORGS]).delete()
             self.stdout.write(self.style.SUCCESS("Тестовые данные удалены."))
-            return
+            # продолжаем — ниже данные будут созданы заново
 
         # ------------------------------------------------------------------- #
         #  Суперадмин                                                          #
