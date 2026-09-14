@@ -8,10 +8,13 @@
 2. Подтверждение идемпотентно. Провайдеры повторяют вебхуки при сетевых
    сбоях и по таймауту; повторная доставка не должна зачислять деньги дважды.
 """
+import logging
 from decimal import Decimal
 
 from django.db import transaction
 from django.utils import timezone
+
+log = logging.getLogger(__name__)
 
 
 class PaymentError(Exception):
@@ -108,18 +111,38 @@ def confirm_intent(intent_id, *, event=None):
         method = _method_for(intent.provider)
         today = timezone.localdate()
 
-        payments = [
-            Payment(
+        payments = []
+        for item in intent.items.select_related("charge").prefetch_related(
+            "charge__payments"
+        ):
+            note = f"Онлайн-оплата, намерение #{intent.pk}"
+
+            # Пока платёж висел, начисление могли закрыть другим способом:
+            # казначей принял наличными, прошёл банковский перевод. Деньги
+            # онлайн при этом получены реально, и не записать их нельзя —
+            # в банке они есть. Но и промолчать нельзя: переплату обнаружат,
+            # только наткнувшись на отрицательный долг. Помечаем явно.
+            current_debt = item.charge.debt
+            if item.amount > current_debt:
+                excess = item.amount - max(current_debt, Decimal("0"))
+                note += (
+                    f". ВНИМАНИЕ: начисление уже было закрыто другим платежом, "
+                    f"переплата {excess} ₽ — требуется сверка"
+                )
+                log.warning(
+                    "Переплата по начислению %s: намерение #%s на %s ₽ при долге %s ₽",
+                    item.charge_id, intent.pk, item.amount, current_debt,
+                )
+
+            payments.append(Payment(
                 organization=intent.organization,
                 charge=item.charge,
                 date=today,
                 amount=item.amount,
                 method=method,
                 external_ref=intent.provider_payment_id,
-                notes=f"Онлайн-оплата, намерение #{intent.pk}",
-            )
-            for item in intent.items.select_related("charge")
-        ]
+                notes=note,
+            ))
         Payment.objects.bulk_create(payments)
 
         intent.status = PaymentIntent.STATUS_SUCCEEDED
