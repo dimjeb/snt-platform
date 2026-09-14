@@ -17,36 +17,50 @@ class PaymentProviderForm(forms.ModelForm):
         label="Секретный ключ",
         widget=forms.PasswordInput(render_value=False),
         required=False,
-        help_text="Оставьте пустым, чтобы не менять сохранённый ключ.",
+        help_text="ЮKassa — секретный ключ, Т-Банк — пароль терминала, "
+                  "Робокасса — Пароль №1. Пусто = не менять.",
+    )
+    secret2_input = forms.CharField(
+        label="Дополнительный ключ",
+        widget=forms.PasswordInput(render_value=False),
+        required=False,
+        help_text="Робокасса — Пароль №2, CloudPayments — API secret. "
+                  "Остальным не нужен. Пусто = не менять.",
     )
 
     class Meta:
         model = PaymentProvider
-        exclude = ("secret_encrypted",)
+        exclude = ("secret_encrypted", "secret2_encrypted")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if self.instance and self.instance.pk:
-            self.fields["secret_input"].help_text = (
-                "Ключ сохранён и читается."
-                if self.instance.secret_is_set
-                else "Ключ не задан или не читается текущим ключом шифрования."
-            ) + " Оставьте пустым, чтобы не менять."
+            for field, is_set in (
+                ("secret_input", self.instance.secret_is_set),
+                ("secret2_input", self.instance.secret2_is_set),
+            ):
+                self.fields[field].help_text = (
+                    "Ключ сохранён и читается."
+                    if is_set
+                    else "Не задан или не читается текущим ключом шифрования."
+                ) + " Оставьте пустым, чтобы не менять."
 
     def clean(self):
         cleaned = super().clean()
         # clean() модели проверяет наличие секрета, поэтому кладём введённое
         # значение в инстанс до валидации, иначеновый провайдер не сохранить.
-        secret = cleaned.get("secret_input")
-        if secret:
-            self.instance.secret = secret
+        if cleaned.get("secret_input"):
+            self.instance.secret = cleaned["secret_input"]
+        if cleaned.get("secret2_input"):
+            self.instance.secret2 = cleaned["secret2_input"]
         return cleaned
 
     def save(self, commit=True):
         obj = super().save(commit=False)
-        secret = self.cleaned_data.get("secret_input")
-        if secret:
-            obj.secret = secret
+        if self.cleaned_data.get("secret_input"):
+            obj.secret = self.cleaned_data["secret_input"]
+        if self.cleaned_data.get("secret2_input"):
+            obj.secret2 = self.cleaned_data["secret2_input"]
         if commit:
             obj.save()
         return obj
@@ -68,10 +82,12 @@ class PaymentProviderAdmin(admin.ModelAdmin):
             "fields": ("organization", "title", "kind", "direction"),
         }),
         ("Реквизиты", {
-            "fields": ("merchant_id", "secret_input", "test_mode"),
+            "fields": ("merchant_id", "secret_input", "secret2_input", "test_mode"),
             "description": (
-                "Секретный ключ хранится в базе в зашифрованном виде "
-                "и нигде не отображается после сохранения."
+                "Ключи хранятся в базе в зашифрованном виде и после "
+                "сохранения не отображаются. Идентификатор мерчанта: "
+                "shopId у ЮKassa, TerminalKey у Т-Банка, логин магазина "
+                "у Робокассы, public id у CloudPayments."
             ),
         }),
         ("Использование", {

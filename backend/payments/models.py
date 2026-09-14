@@ -18,12 +18,16 @@ class PaymentProvider(OrgModel):
 
     KIND_YOOKASSA = "yookassa"
     KIND_TBANK = "tbank"
+    KIND_ROBOKASSA = "robokassa"
+    KIND_CLOUDPAYMENTS = "cloudpayments"
     KIND_SBP = "sbp"
     KIND_MANUAL = "manual"
 
     KIND_CHOICES = [
         (KIND_YOOKASSA, "ЮKassa"),
         (KIND_TBANK, "Т-Банк Эквайринг"),
+        (KIND_ROBOKASSA, "Робокасса"),
+        (KIND_CLOUDPAYMENTS, "CloudPayments"),
         (KIND_SBP, "СБП напрямую через банк"),
         (KIND_MANUAL, "Вручную (без онлайн-оплаты)"),
     ]
@@ -50,8 +54,14 @@ class PaymentProvider(OrgModel):
         "Идентификатор мерчанта", max_length=120, blank=True,
         help_text="shopId у ЮKassa, TerminalKey у Т-Банка.",
     )
-    # Секрет хранится зашифрованным; работать с ним через свойство secret.
+    # Секреты хранятся зашифрованными; работать через свойства secret / secret2.
     secret_encrypted = models.TextField("Секретный ключ (шифрованный)", blank=True)
+    # Второй ключ нужен не всем: у Робокассы это Пароль №2 для проверки
+    # уведомлений, у CloudPayments — API secret в паре с public id.
+    # У ЮKassa и Т-Банка не используется.
+    secret2_encrypted = models.TextField(
+        "Дополнительный ключ (шифрованный)", blank=True
+    )
 
     test_mode = models.BooleanField(
         "Тестовый режим", default=True,
@@ -100,6 +110,24 @@ class PaymentProvider(OrgModel):
         """Задан ли секрет и читается ли он текущим ключом шифрования."""
         return bool(self.secret)
 
+    @property
+    def secret2(self) -> str:
+        """Второй ключ: Пароль №2 у Робокассы, API secret у CloudPayments."""
+        return decrypt(self.secret2_encrypted)
+
+    @secret2.setter
+    def secret2(self, value: str):
+        self.secret2_encrypted = encrypt(value or "")
+
+    @property
+    def secret2_is_set(self) -> bool:
+        return bool(self.secret2)
+
+    @property
+    def needs_second_secret(self) -> bool:
+        """Провайдеры, которым второй ключ обязателен."""
+        return self.kind in (self.KIND_ROBOKASSA, self.KIND_CLOUDPAYMENTS)
+
     # ------------------------------------------------------------------ #
     #  Готовность к работе                                                #
     # ------------------------------------------------------------------ #
@@ -114,7 +142,11 @@ class PaymentProvider(OrgModel):
         """
         if self.kind == self.KIND_MANUAL:
             return True
-        return bool(self.merchant_id) and self.secret_is_set
+        if not (self.merchant_id and self.secret_is_set):
+            return False
+        if self.needs_second_secret and not self.secret2_is_set:
+            return False
+        return True
 
     def clean(self):
         if self.kind != self.KIND_MANUAL and self.is_active:
@@ -126,6 +158,13 @@ class PaymentProvider(OrgModel):
                 raise ValidationError(
                     {"secret_encrypted": "Для онлайн-оплаты нужен секретный ключ."}
                 )
+            if self.needs_second_secret and not self.secret2_is_set:
+                raise ValidationError({
+                    "secret2_encrypted": (
+                        "Этому провайдеру нужен второй ключ: Пароль №2 "
+                        "у Робокассы, API secret у CloudPayments."
+                    )
+                })
 
 
 class PaymentIntent(OrgModel):
