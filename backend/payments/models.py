@@ -271,3 +271,100 @@ class PaymentIntentItem(models.Model):
 
     def __str__(self):
         return f"{self.charge} — {self.amount} ₽"
+
+
+class ObligatoryPayment(OrgModel):
+    """
+    Обязательный платёж товарищества: налоги, взносы, коммунальные и прочее.
+
+    Исходящее направление — деньги уходят со счёта СНТ, а не приходят.
+    Это не эквайринг: онлайн-оплата здесь вспомогательная, главное — учёт
+    сроков. Просроченный налог стоит дороже неудобного интерфейса.
+    """
+
+    KIND_TAX = "tax"
+    KIND_INSURANCE = "insurance"
+    KIND_UTILITY = "utility"
+    KIND_SERVICE = "service"
+    KIND_OTHER = "other"
+
+    KIND_CHOICES = [
+        (KIND_TAX, "Налог"),
+        (KIND_INSURANCE, "Страховые взносы"),
+        (KIND_UTILITY, "Коммунальные услуги"),
+        (KIND_SERVICE, "Услуги подрядчиков"),
+        (KIND_OTHER, "Прочее"),
+    ]
+
+    STATUS_PLANNED = "planned"
+    STATUS_PAID = "paid"
+    STATUS_CANCELED = "canceled"
+
+    STATUS_CHOICES = [
+        (STATUS_PLANNED, "Запланирован"),
+        (STATUS_PAID, "Оплачен"),
+        (STATUS_CANCELED, "Отменён"),
+    ]
+
+    title = models.CharField("Назначение", max_length=255)
+    kind = models.CharField("Вид", max_length=20, choices=KIND_CHOICES,
+                            default=KIND_OTHER)
+    recipient = models.CharField(
+        "Получатель", max_length=255, blank=True,
+        help_text="ИФНС, поставщик, подрядчик.",
+    )
+    amount = models.DecimalField("Сумма", max_digits=12, decimal_places=2)
+    due_date = models.DateField("Срок оплаты")
+
+    status = models.CharField("Статус", max_length=10, choices=STATUS_CHOICES,
+                              default=STATUS_PLANNED)
+    paid_date = models.DateField("Дата оплаты", null=True, blank=True)
+    paid_amount = models.DecimalField(
+        "Оплачено", max_digits=12, decimal_places=2, null=True, blank=True
+    )
+
+    provider = models.ForeignKey(
+        PaymentProvider, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="obligatory_payments", verbose_name="Через провайдера",
+        help_text="Если платёж проводился онлайн.",
+    )
+    external_ref = models.CharField("Внешний ID платежа", max_length=120, blank=True)
+    document = models.FileField(
+        "Документ", upload_to="obligatory/", null=True, blank=True,
+        help_text="Квитанция, платёжное поручение, требование.",
+    )
+
+    paid_by = models.ForeignKey(
+        "accounts.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="paid_obligations", verbose_name="Провёл",
+    )
+    notes = models.TextField("Примечания", blank=True)
+
+    class Meta:
+        verbose_name = "Обязательный платёж"
+        verbose_name_plural = "Обязательные платежи"
+        ordering = ["status", "due_date"]
+        indexes = [
+            models.Index(fields=["organization", "status", "due_date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.title} — {self.amount} ₽ до {self.due_date}"
+
+    @property
+    def is_overdue(self) -> bool:
+        """Просрочен ли платёж. Оплаченный и отменённый просрочить нельзя."""
+        from django.utils import timezone
+
+        if self.status != self.STATUS_PLANNED:
+            return False
+        return self.due_date < timezone.localdate()
+
+    @property
+    def days_left(self) -> int | None:
+        """Сколько дней до срока. Отрицательное — просрочка."""
+        from django.utils import timezone
+
+        if self.status != self.STATUS_PLANNED:
+            return None
+        return (self.due_date - timezone.localdate()).days

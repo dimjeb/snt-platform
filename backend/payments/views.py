@@ -18,11 +18,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from billing.models import Charge
-from core.permissions import IsOrgMember, OrgQuerysetMixin
+from core.permissions import IsOrgMember, IsTreasurer, OrgQuerysetMixin
 
 from .drivers import ProviderError, WebhookAuthError, get_driver
-from .models import PaymentIntent, PaymentProvider
+from .models import ObligatoryPayment, PaymentIntent, PaymentProvider
 from .serializers import (
+    ObligatoryPaymentSerializer,
     PaymentIntentSerializer,
     PaymentProviderPublicSerializer,
     PayRequestSerializer,
@@ -291,3 +292,45 @@ class WebhookView(APIView):
         if intent_id and str(intent_id).isdigit():
             return qs.filter(pk=int(intent_id)).first()
         return None
+
+
+class ObligatoryPaymentViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
+    """
+    Реестр обязательных платежей товарищества.
+
+    Только председатель и казначей: это расходы организации, рядовому члену
+    они не адресованы. Направление исходящее — деньги уходят со счёта СНТ.
+    """
+
+    queryset = ObligatoryPayment.objects.select_related("provider", "paid_by")
+    serializer_class = ObligatoryPaymentSerializer
+    permission_classes = [IsTreasurer]
+    filterset_fields = ["status", "kind"]
+    search_fields = ["title", "recipient", "notes"]
+    ordering_fields = ["due_date", "amount", "status"]
+
+    def perform_create(self, serializer):
+        serializer.save(organization=self.request.org)
+
+    def perform_update(self, serializer):
+        # Кто провёл платёж, фиксируем автоматически: вручную это поле
+        # заполняют неохотно, а при разборе расхождений оно нужнее всего.
+        if serializer.validated_data.get("status") == ObligatoryPayment.STATUS_PAID:
+            serializer.save(paid_by=self.request.user)
+        else:
+            serializer.save()
+
+    @action(detail=False, methods=["get"])
+    def upcoming(self, request):
+        """
+        Ближайшие и просроченные — то, ради чего реестр и нужен.
+
+        Просроченные идут первыми: пропущенный срок важнее предстоящего.
+        """
+        from django.utils import timezone
+
+        horizon = timezone.localdate() + timezone.timedelta(days=30)
+        qs = self.get_queryset().filter(
+            status=ObligatoryPayment.STATUS_PLANNED, due_date__lte=horizon
+        ).order_by("due_date")
+        return Response(self.get_serializer(qs, many=True).data)

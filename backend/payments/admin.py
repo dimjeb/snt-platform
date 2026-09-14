@@ -1,7 +1,7 @@
 from django import forms
 from django.contrib import admin
 
-from .models import PaymentProvider
+from .models import ObligatoryPayment, PaymentProvider
 
 
 class PaymentProviderForm(forms.ModelForm):
@@ -98,3 +98,17 @@ class PaymentProviderAdmin(admin.ModelAdmin):
     @admin.display(description="Готов к работе", boolean=True)
     def configured(self, obj):
         return obj.is_configured
+
+
+@admin.register(ObligatoryPayment)
+class ObligatoryPaymentAdmin(admin.ModelAdmin):
+    list_display = ("title", "organization", "kind", "amount",
+                    "due_date", "status", "overdue")
+    list_filter = ("organization", "status", "kind")
+    search_fields = ("title", "recipient", "notes")
+    date_hierarchy = "due_date"
+    ordering = ("status", "due_date")
+
+    @admin.display(description="Просрочен", boolean=True)
+    def overdue(self, obj):
+        return obj.is_overdue
