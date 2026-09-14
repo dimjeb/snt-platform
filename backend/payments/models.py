@@ -126,3 +126,109 @@ class PaymentProvider(OrgModel):
                 raise ValidationError(
                     {"secret_encrypted": "Для онлайн-оплаты нужен секретный ключ."}
                 )
+
+
+class PaymentIntent(OrgModel):
+    """
+    Намерение оплатить: член нажал «оплатить», платёж ещё не подтверждён.
+
+    Ключевое разделение: запись Payment создаётся ТОЛЬКО когда провайдер
+    подтвердил поступление денег. Член может создать намерение, но не может
+    создать платёж — иначе любой пометил бы свой долг оплаченным.
+    """
+
+    STATUS_PENDING = "pending"
+    STATUS_SUCCEEDED = "succeeded"
+    STATUS_CANCELED = "canceled"
+    STATUS_FAILED = "failed"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Ожидает оплаты"),
+        (STATUS_SUCCEEDED, "Оплачено"),
+        (STATUS_CANCELED, "Отменено"),
+        (STATUS_FAILED, "Ошибка"),
+    ]
+
+    provider = models.ForeignKey(
+        PaymentProvider, on_delete=models.PROTECT, related_name="intents",
+        verbose_name="Провайдер",
+    )
+    member = models.ForeignKey(
+        "members.Member", on_delete=models.PROTECT, related_name="payment_intents",
+        null=True, blank=True, verbose_name="Плательщик",
+    )
+    amount = models.DecimalField("Сумма", max_digits=12, decimal_places=2)
+    status = models.CharField(
+        "Статус", max_length=12, choices=STATUS_CHOICES, default=STATUS_PENDING
+    )
+
+    # Ключ идемпотентности: защищает от двойного списания, если член
+    # дважды нажал кнопку или клиент повторил запрос.
+    idempotency_key = models.CharField("Ключ идемпотентности", max_length=64)
+    # Идентификатор платежа на стороне провайдера — по нему находим
+    # намерение, когда приходит вебхук.
+    provider_payment_id = models.CharField(
+        "ID платежа у провайдера", max_length=120, blank=True, db_index=True
+    )
+    confirmation_url = models.URLField("Ссылка на оплату", max_length=500, blank=True)
+
+    created_by = models.ForeignKey(
+        "accounts.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="created_payment_intents",
+    )
+    paid_at = models.DateTimeField("Оплачено", null=True, blank=True)
+    # Последнее событие от провайдера — чтобы разбирать спорные случаи
+    # по факту, а не по памяти.
+    last_event = models.JSONField("Последнее событие провайдера", null=True, blank=True)
+    error_message = models.CharField("Причина ошибки", max_length=500, blank=True)
+
+    class Meta:
+        verbose_name = "Намерение оплаты"
+        verbose_name_plural = "Намерения оплаты"
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "idempotency_key"],
+                name="unique_intent_idempotency_key",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.amount} ₽ / {self.get_status_display()}"
+
+    @property
+    def is_final(self) -> bool:
+        """Достигло ли намерение конечного состояния."""
+        return self.status in (self.STATUS_SUCCEEDED, self.STATUS_CANCELED,
+                               self.STATUS_FAILED)
+
+
+class PaymentIntentItem(models.Model):
+    """
+    Разнесение суммы намерения по конкретным начислениям.
+
+    Отдельная сущность, потому что один платёж может закрывать несколько
+    начислений: «оплатить весь долг» — это членский взнос плюс целевой
+    плюс электроэнергия. По каждой строке при подтверждении создаётся
+    свой Payment, иначе долг по отдельному начислению не сойдётся.
+    """
+
+    intent = models.ForeignKey(
+        PaymentIntent, on_delete=models.CASCADE, related_name="items"
+    )
+    charge = models.ForeignKey(
+        "billing.Charge", on_delete=models.PROTECT, related_name="intent_items"
+    )
+    amount = models.DecimalField("Сумма", max_digits=12, decimal_places=2)
+
+    class Meta:
+        verbose_name = "Строка намерения оплаты"
+        verbose_name_plural = "Строки намерения оплаты"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["intent", "charge"], name="unique_charge_per_intent"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.charge} — {self.amount} ₽"
