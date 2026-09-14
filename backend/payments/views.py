@@ -170,7 +170,10 @@ class PayView(APIView):
         except PaymentError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        return_url = request.build_absolute_uri("/billing")
+        # Возврат именно на дашборд: раздел /billing члену СНТ закрыт
+        # роутером, человек попал бы на редирект вместо результата оплаты.
+        # Идентификатор намерения — чтобы страница показала исход.
+        return_url = request.build_absolute_uri(f"/dashboard?payment={intent.pk}")
         try:
             created = get_driver(provider).create_payment(intent, return_url)
         except ProviderError as exc:

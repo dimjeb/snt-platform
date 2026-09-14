@@ -216,6 +216,10 @@ class Command(BaseCommand):
         self.verify("профиль отдаёт member_id", data.get("member_id") is not None,
                     f"HTTP {r.status_code}")
 
+        # ---------------- Оплата ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("ОПЛАТА"))
+        self._check_payments(c, ME, CH)
+
         # ---------------- Суперадмин ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("СУПЕРАДМИН"))
         r = get("/api/plots/?page_size=1", AD)
@@ -229,3 +233,121 @@ class Command(BaseCommand):
         data = self._json(r) or {}
         self.verify("роль суперадмина проставлена", data.get("role") == "superadmin",
                     f"role={data.get('role')}")
+
+    def _check_payments(self, c, member_headers, chairman_headers):
+        """
+        Проверка платёжного пути.
+
+        Провайдер заводится здесь же, Робокассой: у неё подпись уведомления
+        проверяется локально, без обращения к сети — в контейнере оно может
+        быть закрыто. Всё откатывается вместе с общей транзакцией.
+        """
+        import hashlib
+        import json as _json
+
+        from billing.models import Charge, Payment
+        from payments.models import PaymentIntent, PaymentProvider
+
+        me = self._json(c.get("/api/me/", **member_headers)) or {}
+        org_id = me.get("organization")
+        if not org_id:
+            self.verify("платежи: у члена есть организация", False)
+            return
+
+        # PayView выбирает основного провайдера организации, поэтому на время
+        # проверки свой должен стать единственным активным — иначе намерение
+        # уйдёт к настоящему провайдеру, а вебхук придёт к проверочному.
+        # Всё откатывается вместе с общей транзакцией.
+        PaymentProvider.objects.filter(
+            organization_id=org_id, direction="in"
+        ).update(is_active=False, is_default=False)
+
+        provider = PaymentProvider(
+            organization_id=org_id, title="Проверка", direction="in",
+            kind=PaymentProvider.KIND_ROBOKASSA, merchant_id="check_shop",
+            is_active=True, is_default=True, test_mode=True,
+        )
+        provider.secret = "P1"
+        provider.secret2 = "P2"
+        provider.save()
+
+        r = c.get("/api/payments/my-debt/", **member_headers)
+        debt = self._json(r) or {}
+        self.verify("долг члена считается", r.status_code == 200,
+                    f"HTTP {r.status_code}, долг {debt.get('total_debt')}")
+
+        # Чужое начисление оплатить нельзя
+        foreign = (
+            Charge.objects.filter(organization_id=org_id)
+            .exclude(plot__ownerships__member__user_account__username="member_berezka")
+            .first()
+        )
+        if foreign is not None:
+            r = c.post("/api/payments/pay/",
+                       data=_json.dumps({"charge_ids": [foreign.pk]}),
+                       content_type="application/json", **member_headers)
+            self.verify("чужое начисление оплатить нельзя", r.status_code == 403,
+                        f"HTTP {r.status_code}")
+
+        if not (debt.get("charges") or []):
+            # Долга может не быть — это не повод пропускать сквозной сценарий.
+            # Заводим начисление сами: транзакция всё равно откатится.
+            from billing.models import BillingPeriod, ChargeType
+            from members.models import Plot
+
+            plot = Plot.objects.filter(
+                organization_id=org_id,
+                ownerships__member_id=me.get("member_id"),
+                ownerships__date_to__isnull=True,
+            ).first()
+            period = BillingPeriod.objects.filter(organization_id=org_id).first()
+            ctype = ChargeType.objects.filter(organization_id=org_id).first()
+            if not (plot and period and ctype):
+                self.verify("платежи: есть участок, период и вид начисления",
+                            False, "сквозной сценарий пропущен")
+                return
+            Charge.objects.create(
+                organization_id=org_id, plot=plot, charge_type=ctype,
+                period=period, amount="1234.00",
+                description="Проверка платёжного пути",
+            )
+            debt = self._json(c.get("/api/payments/my-debt/", **member_headers)) or {}
+            self.verify("начисление для проверки заведено",
+                        bool(debt.get("charges")),
+                        f"долг {debt.get('total_debt')}")
+
+        r = c.post("/api/payments/pay/", data="{}",
+                   content_type="application/json", **member_headers)
+        intent = self._json(r) or {}
+        self.verify("намерение оплаты создаётся",
+                    r.status_code == 200 and bool(intent.get("confirmation_url")),
+                    f"HTTP {r.status_code}")
+        if not intent.get("id"):
+            return
+
+        inv = str(intent["id"])
+        amount = str(intent["amount"])
+
+        # Поддельное уведомление не должно ничего менять
+        bad = hashlib.md5(f"{amount}:{inv}:WRONG".encode()).hexdigest()
+        r = c.post(f"/api/payments/webhook/{provider.pk}/",
+                   data={"OutSum": amount, "InvId": inv, "SignatureValue": bad})
+        still_pending = PaymentIntent.objects.get(pk=intent["id"]).status == "pending"
+        self.verify("поддельный вебхук отклоняется",
+                    r.status_code == 400 and still_pending, f"HTTP {r.status_code}")
+
+        before = Payment.objects.filter(organization_id=org_id).count()
+        good = hashlib.md5(f"{amount}:{inv}:P2".encode()).hexdigest()
+        r = c.post(f"/api/payments/webhook/{provider.pk}/",
+                   data={"OutSum": amount, "InvId": inv, "SignatureValue": good})
+        created = Payment.objects.filter(organization_id=org_id).count() - before
+        self.verify("настоящий вебхук создаёт платежи",
+                    r.status_code == 200 and created > 0,
+                    f"HTTP {r.status_code}, платежей {created}")
+
+        # Повторная доставка не должна задваивать деньги
+        c.post(f"/api/payments/webhook/{provider.pk}/",
+               data={"OutSum": amount, "InvId": inv, "SignatureValue": good})
+        after = Payment.objects.filter(organization_id=org_id).count() - before
+        self.verify("повторный вебхук не задваивает платежи", after == created,
+                    f"было {created}, стало {after}")
