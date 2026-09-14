@@ -188,7 +188,8 @@ class Command(BaseCommand):
         # ------------------------------------------------------------------- #
         #  Суперадмин                                                          #
         # ------------------------------------------------------------------- #
-        if not User.objects.filter(username="admin").exists():
+        admin = User.objects.filter(username="admin").first()
+        if admin is None:
             User.objects.create_superuser(
                 username="admin",
                 email="admin@snt-platforma.ru",
@@ -201,6 +202,16 @@ class Command(BaseCommand):
                 role=User.ROLE_SUPERADMIN,
             )
             self.stdout.write(self.style.SUCCESS("✓ Суперадмин admin / 12345678"))
+        elif admin.is_superuser and admin.role != User.ROLE_SUPERADMIN:
+            # Учётка, заведённая прошлыми прогонами или через createsuperuser,
+            # осталась с ролью member. Чиним на месте: пересоздавать нельзя,
+            # это действующая учётная запись с рабочим паролем.
+            was = admin.role
+            admin.role = User.ROLE_SUPERADMIN
+            admin.save(update_fields=["role"])
+            self.stdout.write(self.style.SUCCESS(
+                f"✓ Суперадмину admin исправлена роль: «{was}» → superadmin"
+            ))
         else:
             self.stdout.write("  Суперадмин admin уже существует")
 
