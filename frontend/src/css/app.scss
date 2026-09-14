@@ -1,21 +1,141 @@
-// app global css in SCSS form
+// app global css — SNT Platform
+
 body {
   font-family: 'Roboto', sans-serif;
 }
 
-.page-padding {
-  padding: 16px;
-}
-
-.full-width-card {
-  width: 100%;
-}
+// ── Утилиты ──
+.page-padding { padding: 16px; }
+.full-width-card { width: 100%; }
 
 .debt-amount {
   color: var(--q-negative);
   font-weight: bold;
+  font-variant-numeric: tabular-nums;
 }
-
 .paid-amount {
   color: var(--q-positive);
+  font-variant-numeric: tabular-nums;
+}
+
+// ── Хедер ──
+.snt-header {
+  background: linear-gradient(90deg, #2d6a4f 0%, #1b4332 100%) !important;
+  box-shadow: 0 1px 8px rgba(0,0,0,0.25) !important;
+}
+.snt-toolbar { min-height: 56px; }
+.snt-logo { opacity: 0.95; }
+.snt-page-title {
+  font-size: 16px;
+  font-weight: 500;
+  opacity: 0.9;
+}
+
+// ── Боковая панель ──
+.snt-drawer {
+  background: #ffffff !important;
+  border-right: 1px solid rgba(0,0,0,0.08) !important;
+}
+.body--dark .snt-drawer {
+  background: #1e1e1e !important;
+  border-right-color: rgba(255,255,255,0.06) !important;
+}
+
+.snt-drawer-profile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 16px 14px;
+  background: #f7faf8;
+  border-bottom: 1px solid rgba(0,0,0,0.07);
+}
+.body--dark .snt-drawer-profile {
+  background: #252525;
+  border-bottom-color: rgba(255,255,255,0.06);
+}
+
+.snt-avatar {
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  background: #2d6a4f;
+  color: white;
+  font-size: 16px;
+  font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+
+.snt-drawer-profile-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.snt-role-chip {
+  display: inline-block;
+  background: #e8f5e9;
+  color: #2d6a4f;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+.body--dark .snt-role-chip {
+  background: rgba(45,106,79,0.3);
+  color: #81c995;
+}
+
+.snt-nav-list {
+  padding-top: 8px;
+}
+
+.snt-nav-group-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #9e9e9e;
+  padding: 16px 16px 4px;
+}
+
+.snt-nav-item {
+  border-radius: 8px !important;
+  margin: 1px 8px !important;
+  min-height: 40px !important;
+  font-size: 14px;
+}
+.snt-nav-item .q-item__section--avatar {
+  min-width: 36px !important;
+  padding-right: 4px !important;
+}
+.snt-nav-item .q-icon { font-size: 20px !important; }
+
+// Активный пункт
+.snt-nav-item.q-router-link--active,
+.snt-nav-item.q-router-link--exact-active {
+  background: #e8f5e9 !important;
+  color: #1b4332 !important;
+  font-weight: 600 !important;
+}
+.snt-nav-item.q-router-link--active .q-icon,
+.snt-nav-item.q-router-link--exact-active .q-icon {
+  color: #2d6a4f !important;
+}
+.body--dark .snt-nav-item.q-router-link--active,
+.body--dark .snt-nav-item.q-router-link--exact-active {
+  background: rgba(45,106,79,0.25) !important;
+  color: #81c995 !important;
+}
+
+.snt-logout { color: #e53935 !important; }
+.snt-logout .q-icon { color: #e53935 !important; }
+
+.snt-separator { margin: 8px 0; }
+
+// ── Страницы — улучшенный отступ на десктопе ──
+@media (min-width: 768px) {
+  .q-page {
+    padding: 24px 28px !important;
+    max-width: 1100px;
+  }
 }

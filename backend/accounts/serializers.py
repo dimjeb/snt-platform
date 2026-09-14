@@ -33,11 +33,31 @@ class UserCreateSerializer(serializers.ModelSerializer):
 class MeSerializer(serializers.ModelSerializer):
     """Профиль текущего пользователя."""
     organization_name = serializers.CharField(source="organization.name", read_only=True)
+    # Личный кабинет члена стартует с me.member_id: без этого поля страница
+    # показаний выходит на первой же строке и счётчик не находится никогда.
+    member_id = serializers.IntegerField(source="member.id", read_only=True, default=None)
+    role = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = (
             "id", "username", "email", "first_name", "last_name",
-            "phone", "role", "organization", "organization_name",
+            "phone", "role", "organization", "organization_name", "member_id",
         )
-        read_only_fields = ("role", "organization", "organization_name")
+        read_only_fields = (
+            "organization", "organization_name", "member_id",
+        )
+
+    def get_role(self, obj):
+        """
+        Роль, согласованная с тем, как решает бэкенд.
+
+        Суперадмина здесь определяют по is_superuser: так ветвятся и
+        OrganizationMiddleware, и OrgQuerysetMixin, и IsOrgMember. Фронт же
+        смотрит на role, а createsuperuser её не выставляет — из-за чего
+        суперадмин выглядел в интерфейсе рядовым членом: без переключателя
+        СНТ, без раздела управления, с личным кабинетом на дашборде.
+        """
+        if obj.is_superuser:
+            return User.ROLE_SUPERADMIN
+        return obj.role

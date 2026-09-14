@@ -31,10 +31,16 @@ class IsTreasurer(BasePermission):
 class IsOrgMember(BasePermission):
     """Любой аутентифицированный пользователь, относящийся к организации."""
     def has_permission(self, request, view):
-        return bool(
-            request.user and request.user.is_authenticated
-            and request.org is not None
-        )
+        user = request.user
+        if not (user and user.is_authenticated):
+            return False
+        # Суперадмин без выбранного СНТ видит всё — ровно так же, как это
+        # уже устроено в OrgQuerysetMixin. Без этой ветки он получал 403
+        # на участках: организаций больше одной, автоподстановка в
+        # middleware не срабатывает, request.org пуст.
+        if user.is_superuser:
+            return True
+        return request.org is not None
 
 
 class OrgQuerysetMixin:

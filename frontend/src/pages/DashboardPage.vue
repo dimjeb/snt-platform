@@ -52,15 +52,53 @@
         </q-card-section>
       </q-card>
 
+      <!-- Итог оплаты после возврата с формы провайдера -->
+      <q-banner v-if="payResult" :class="payResult.ok ? 'bg-green-1' : 'bg-orange-1'"
+                class="q-mb-md" rounded>
+        <template #avatar>
+          <q-icon :name="payResult.ok ? 'check_circle' : 'schedule'"
+                  :color="payResult.ok ? 'positive' : 'orange-8'" />
+        </template>
+        {{ payResult.text }}
+      </q-banner>
+
       <q-card flat bordered class="q-mb-md" v-if="myDebts.length">
         <q-card-section>
-          <div class="text-subtitle2 q-mb-sm">Мои задолженности</div>
+          <div class="row items-center q-mb-sm">
+            <div class="text-subtitle2">Мои задолженности</div>
+            <q-space />
+            <div class="text-subtitle2 debt-amount">{{ formatMoney(myDebtTotal) }} ₽</div>
+          </div>
           <q-list separator dense>
             <q-item v-for="d in myDebts" :key="d.id">
-              <q-item-section>{{ d.charge_type_name }} · {{ d.period_name }}</q-item-section>
+              <q-item-section>
+                <q-item-label>{{ d.charge_type_name }}</q-item-label>
+                <q-item-label caption>{{ d.period_label }} · уч. {{ d.plot_number }}</q-item-label>
+              </q-item-section>
               <q-item-section side class="debt-amount">{{ formatMoney(d.debt) }} ₽</q-item-section>
             </q-item>
           </q-list>
+
+          <q-btn
+            v-if="onlineAvailable"
+            color="green-8"
+            icon="payments"
+            :label="`Оплатить ${formatMoney(myDebtTotal)} ₽`"
+            class="full-width q-mt-md"
+            unelevated
+            :loading="paying"
+            @click="payDebt"
+          />
+          <div v-else class="text-caption text-grey-6 q-mt-sm">
+            Онлайн-оплата в этом СНТ не подключена — обратитесь к казначею.
+          </div>
+        </q-card-section>
+      </q-card>
+
+      <q-card flat bordered class="q-mb-md" v-else-if="debtsLoaded">
+        <q-card-section class="text-center text-grey-6">
+          <q-icon name="check_circle" color="positive" size="28px" />
+          <div class="q-mt-xs">Задолженности нет</div>
         </q-card-section>
       </q-card>
     </div>
@@ -113,20 +151,91 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
+import { useQuasar } from 'quasar'
 import { useAuthStore } from 'stores/auth'
 import api from 'src/api/client'
 
 const auth = useAuthStore()
+const route = useRoute()
+const $q = useQuasar()
 
 const stats = ref({ members: 0, plots: 0, debtors: 0, totalDebt: 0 })
 const myDebts = ref([])
+const myDebtTotal = ref(0)
+const onlineAvailable = ref(false)
+const debtsLoaded = ref(false)
+const paying = ref(false)
+const payResult = ref(null)
 
 function formatMoney(val) {
   if (!val) return '0'
   return Number(val).toLocaleString('ru-RU', { maximumFractionDigits: 0 })
 }
 
+async function loadMyDebt() {
+  try {
+    const { data } = await api.get('/payments/my-debt/')
+    myDebts.value = data.charges || []
+    myDebtTotal.value = Number(data.total_debt || 0)
+    onlineAvailable.value = !!data.online_available
+  } catch (e) {
+    console.error(e)
+  } finally {
+    debtsLoaded.value = true
+  }
+}
+
+async function payDebt() {
+  paying.value = true
+  try {
+    const { data } = await api.post('/payments/pay/', {})
+    if (data.confirmation_url) {
+      // Уходим на форму провайдера; вернёмся на /dashboard?payment=<id>
+      window.location.href = data.confirmation_url
+      return
+    }
+    $q.notify({ type: 'warning', message: 'Провайдер не вернул ссылку на оплату' })
+  } catch (e) {
+    $q.notify({
+      type: 'negative',
+      message: e.response?.data?.detail || 'Не удалось начать оплату',
+    })
+  } finally {
+    paying.value = false
+  }
+}
+
+async function checkReturnedPayment() {
+  const intentId = route.query.payment
+  if (!intentId) return
+  try {
+    const { data } = await api.get(`/payments/intents/${intentId}/`)
+    if (data.status === 'succeeded') {
+      payResult.value = { ok: true, text: `Оплата ${data.amount} ₽ прошла. Спасибо!` }
+    } else if (data.status === 'pending') {
+      // Провайдер мог ещё не прислать уведомление — это нормально,
+      // деньги подтверждаются вебхуком, а не возвратом на страницу.
+      payResult.value = {
+        ok: false,
+        text: 'Платёж обрабатывается. Задолженность обновится, когда банк подтвердит оплату.',
+      }
+    } else {
+      payResult.value = {
+        ok: false,
+        text: data.error_message || 'Платёж не завершён.',
+      }
+    }
+  } catch (e) {
+    console.error(e)
+  }
+}
+
 onMounted(async () => {
+  if (auth.isMember) {
+    await checkReturnedPayment()
+    await loadMyDebt()
+  }
   if (!auth.isMember) {
     try {
       const [members, plots] = await Promise.all([

@@ -27,33 +27,34 @@ class BillingPeriodViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(organization=self.request.org)
 
-    @action(detail=False, methods=["get"])
-    def debt_summary(self, request):
-        """Сводка долгов по всем участкам."""
-        data = get_debt_summary(request.org)
-        return Response(data)
+    # Все три операции относятся к конкретному расчётному периоду, поэтому
+    # маршруты detail: период берётся из URL, а не из тела запроса. Раньше
+    # они были объявлены detail=False, и фронт, зовущий
+    # /billing/periods/<id>/debt_summary/, получал 404 — страница начислений
+    # не работала целиком.
+    @action(detail=True, methods=["get"])
+    def debt_summary(self, request, pk=None):
+        """Сводка долгов по участкам за этот расчётный период."""
+        period = self.get_object()
+        return Response(get_debt_summary(request.org, period=period))
 
-    @action(detail=False, methods=["post"])
-    def create_membership_charges(self, request):
-        """Массовое создание членских взносов."""
+    @action(detail=True, methods=["post"])
+    def create_membership_charges(self, request, pk=None):
+        """Массовое создание членских взносов за этот период."""
+        period = self.get_object()
         s = BulkMembershipChargeSerializer(data=request.data)
         s.is_valid(raise_exception=True)
-        period = BillingPeriod.objects.get(
-            pk=s.validated_data["period_id"], organization=request.org
-        )
         count = create_membership_charges(
             period, s.validated_data["amount"], s.validated_data["description"]
         )
         return Response({"created": count})
 
-    @action(detail=False, methods=["post"])
-    def create_target_charges(self, request):
-        """Создание целевых взносов."""
+    @action(detail=True, methods=["post"])
+    def create_target_charges(self, request, pk=None):
+        """Создание целевых взносов за этот период."""
+        period = self.get_object()
         s = BulkTargetChargeSerializer(data=request.data)
         s.is_valid(raise_exception=True)
-        period = BillingPeriod.objects.get(
-            pk=s.validated_data["period_id"], organization=request.org
-        )
         charge_type = ChargeType.objects.get(
             pk=s.validated_data["charge_type_id"], organization=request.org
         )

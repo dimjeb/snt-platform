@@ -233,6 +233,10 @@ async function save() {
   try {
     const payload = { ...form.value }
     delete payload.id
+    // DateField в DRF не принимает пустую строку — только null или дату.
+    // Добавление члена без даты вступления (обычный случай) падало с 400,
+    // а диалог оставался открытым: он закрывается только при успехе.
+    if (!payload.joined_at) payload.joined_at = null
     if (editMode.value) {
       await api.patch(`/members/${form.value.id}/`, payload)
     } else {

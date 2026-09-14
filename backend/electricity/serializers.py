@@ -23,6 +23,15 @@ class MeterReadingSerializer(serializers.ModelSerializer):
         source="submitted_by.get_full_name", read_only=True
     )
     meter_label = serializers.CharField(source="meter.__str__", read_only=True)
+    # Эти два поля ждёт список показаний на фронте. Без них строка
+    # рендерилась как «Сч. · Уч. —». default=None — у главного ввода
+    # участка нет, обход meter.plot.number там упирается в None.
+    meter_serial = serializers.CharField(
+        source="meter.serial_number", read_only=True, default=None
+    )
+    plot_number = serializers.CharField(
+        source="meter.plot.number", read_only=True, default=None
+    )
 
     class Meta:
         model = MeterReading

@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     "members",
     "billing",
     "electricity",
+    "payments",
     "reports",
 ]
 
@@ -109,7 +110,7 @@ REST_FRAMEWORK = {
         "rest_framework.filters.SearchFilter",
         "rest_framework.filters.OrderingFilter",
     ],
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "DEFAULT_PAGINATION_CLASS": "core.pagination.StandardPagination",
     "PAGE_SIZE": 50,
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
@@ -174,4 +175,16 @@ CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 CORS_ALLOWED_ORIGINS = config(
     "CORS_ALLOWED_ORIGINS",
     default="http://localhost:9000,http://localhost:8080",
+).split(",")
+
+# ─── Платежи ──────────────────────────────────────────────────────────────────
+
+# Ключ шифрования реквизитов платёжных провайдеров в базе. Отдельно от
+# SECRET_KEY намеренно: его ротация не должна делать реквизиты всех СНТ
+# нечитаемыми. Если пусто — ключ выводится из SECRET_KEY.
+PAYMENTS_ENCRYPTION_KEY = config("PAYMENTS_ENCRYPTION_KEY", default="")
+
+# ─── CSRF / Proxy ─────────────────────────────────────────────────────────────
+CSRF_TRUSTED_ORIGINS = config(
+    "CSRF_TRUSTED_ORIGINS", default="http://localhost"
 ).split(",")
