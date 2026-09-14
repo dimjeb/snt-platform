@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     "members",
     "billing",
     "electricity",
+    "payments",
     "reports",
 ]
 
@@ -175,6 +176,13 @@ CORS_ALLOWED_ORIGINS = config(
     "CORS_ALLOWED_ORIGINS",
     default="http://localhost:9000,http://localhost:8080",
 ).split(",")
+
+# ─── Платежи ──────────────────────────────────────────────────────────────────
+
+# Ключ шифрования реквизитов платёжных провайдеров в базе. Отдельно от
+# SECRET_KEY намеренно: его ротация не должна делать реквизиты всех СНТ
+# нечитаемыми. Если пусто — ключ выводится из SECRET_KEY.
+PAYMENTS_ENCRYPTION_KEY = config("PAYMENTS_ENCRYPTION_KEY", default="")
 
 # ─── CSRF / Proxy ─────────────────────────────────────────────────────────────
 CSRF_TRUSTED_ORIGINS = config(

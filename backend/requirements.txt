@@ -29,5 +29,8 @@ gunicorn==23.0.0
 # Config
 python-decouple==3.8
 
+# Шифрование реквизитов платёжных провайдеров
+cryptography==41.0.7
+
 # Dev
 django-extensions==3.2.3
