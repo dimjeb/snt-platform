@@ -519,6 +519,43 @@ class Command(BaseCommand):
                         bool(debt.get("charges")),
                         f"долг {debt.get('total_debt')}")
 
+        # ---------------- Частичная оплата ----------------
+        from decimal import Decimal, ROUND_HALF_UP
+
+        total = Decimal(str(debt.get("total_debt") or "0"))
+        power = Decimal(str(debt.get("electricity_debt") or "0"))
+        other = Decimal(str(debt.get("other_debt") or "0"))
+        self.verify("свет и прочее в сумме дают общий долг",
+                    power + other == total, f"свет {power} + прочее {other} = {total}")
+
+        r = c.post("/api/payments/pay/",
+                   data=_json.dumps({"amount": str(total + Decimal("100"))}),
+                   content_type="application/json", **member_headers)
+        self.verify("сумма больше долга отклоняется", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+
+        half = (total / 2).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        r = c.post("/api/payments/pay/",
+                   data=_json.dumps({"amount": str(half)}),
+                   content_type="application/json", **member_headers)
+        part = self._json(r) or {}
+        self.verify("намерение на частичную сумму создаётся",
+                    r.status_code == 200 and Decimal(str(part.get("amount"))) == half,
+                    f"HTTP {r.status_code}, сумма {part.get('amount')}")
+
+        if part.get("id"):
+            p_inv = str(part["id"])
+            p_amount = str(part["amount"])
+            sig = hashlib.md5(f"{p_amount}:{p_inv}:P2".encode()).hexdigest()
+            c.post(f"/api/payments/webhook/{provider.pk}/",
+                   data={"OutSum": p_amount, "InvId": p_inv, "SignatureValue": sig})
+            debt = self._json(c.get("/api/payments/my-debt/", **member_headers)) or {}
+            left = Decimal(str(debt.get("total_debt") or "0"))
+            self.verify("долг уменьшился ровно на уплаченное",
+                        total - left == half, f"было {total}, стало {left}, платили {half}")
+            self.verify("частичный платёж не закрывает долг целиком", left > 0,
+                        f"остаток {left}")
+
         r = c.post("/api/payments/pay/", data="{}",
                    content_type="application/json", **member_headers)
         intent = self._json(r) or {}

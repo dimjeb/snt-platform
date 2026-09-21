@@ -9,7 +9,7 @@
    сбоях и по таймауту; повторная доставка не должна зачислять деньги дважды.
 """
 import logging
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
 from django.utils import timezone
@@ -21,20 +21,47 @@ class PaymentError(Exception):
     """Платёж провести нельзя — с понятной причиной для пользователя."""
 
 
-def build_debt_allocation(charges):
+def build_debt_allocation(charges, amount=None):
     """
     Раскладывает долг по начислениям: от старых к новым.
 
     Возвращает список пар (начисление, сумма к оплате), пропуская всё,
     что уже закрыто. Порядок важен: гасить сначала старое — обычная
     практика и меньше поводов для спора.
+
+    amount задаёт частичную оплату: человек платит сколько может, а не
+    всё сразу. Сумма разносится здесь, на сервере, и каждое начисление
+    получает свою часть — поэтому частичный платёж уменьшает долг ровно
+    на уплаченное и ничего не закрывает досрочно. Больше фактического
+    долга принять нельзя: переплату потом не с чем сверить.
     """
     allocation = []
     for charge in charges:
         debt = charge.debt
         if debt > 0:
             allocation.append((charge, debt))
-    return allocation
+
+    if amount is None:
+        return allocation
+
+    remaining = Decimal(amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if remaining <= 0:
+        raise PaymentError("Сумма оплаты должна быть больше нуля.")
+
+    total = sum((debt for _, debt in allocation), Decimal("0"))
+    if remaining > total:
+        raise PaymentError(
+            f"Сумма больше задолженности: к оплате доступно {total} ₽."
+        )
+
+    partial = []
+    for charge, debt in allocation:
+        if remaining <= 0:
+            break
+        take = min(debt, remaining)
+        partial.append((charge, take))
+        remaining -= take
+    return partial
 
 
 @transaction.atomic

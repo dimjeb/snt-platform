@@ -1,3 +1,4 @@
+from decimal import Decimal
 from rest_framework import serializers
 
 from .models import (
@@ -55,13 +56,21 @@ class PayRequestSerializer(serializers.Serializer):
     """
     Запрос на оплату.
 
-    charge_ids необязателен: без него оплачивается весь долг. Сумму клиент
-    не передаёт вовсе — она считается на сервере по фактическим долгам,
-    иначе долг закрывался бы копеечным платежом.
+    charge_ids необязателен: без него берётся весь долг.
+
+    amount тоже необязателен и означает частичную оплату — заплатить
+    меньше полного долга. Разносит сумму по начислениям сервер
+    (build_debt_allocation), клиент лишь называет размер платежа: иначе
+    можно было бы прислать копейку и указать, какое начисление ею
+    закрыть. Больше фактического долга сумма быть не может.
     """
 
     charge_ids = serializers.ListField(
         child=serializers.IntegerField(), required=False, allow_empty=False
+    )
+    amount = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False,
+        min_value=Decimal("1"),
     )
 
 

@@ -7,6 +7,7 @@ HTTP-слой платежей.
 """
 import logging
 import uuid
+from decimal import Decimal
 
 from django.db import transaction
 from django.utils.decorators import method_decorator
@@ -17,7 +18,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from billing.models import Charge
+from billing.models import Charge, ChargeType
 from core.permissions import IsOrgMember, IsTreasurer, OrgQuerysetMixin
 
 from .drivers import ProviderError, WebhookAuthError, get_driver
@@ -56,6 +57,46 @@ def _member_charges(request):
     )
 
 
+def _member_meters(request):
+    """
+    Счётчики участков члена с последним переданным показанием.
+
+    Нужно, чтобы в кабинете было видно основание начисления за свет:
+    сумма без показания, из которого она получена, у человека доверия
+    не вызывает и заканчивается звонком казначею.
+    """
+    from electricity.models import Meter
+
+    member = getattr(request.user, "member", None)
+    if member is None:
+        return []
+
+    meters = (
+        Meter.objects.filter(
+            organization=request.org,
+            is_main=False,
+            plot__ownerships__member=member,
+            plot__ownerships__date_to__isnull=True,
+        )
+        .select_related("plot")
+        .prefetch_related("readings")
+        .distinct()
+    )
+
+    result = []
+    for meter in meters:
+        # Показания подтянуты prefetch-ем, поэтому максимум берём в памяти:
+        # .order_by().first() здесь сходил бы в базу на каждый счётчик.
+        last = max(meter.readings.all(), key=lambda r: r.date, default=None)
+        result.append({
+            "plot_number": meter.plot.number if meter.plot else None,
+            "serial_number": meter.serial_number,
+            "last_reading_date": last.date if last else None,
+            "last_reading_value": last.value if last else None,
+        })
+    return result
+
+
 class MyDebtView(APIView):
     """Долг текущего члена СНТ и доступность онлайн-оплаты."""
 
@@ -76,20 +117,39 @@ class MyDebtView(APIView):
             and provider.kind != PaymentProvider.KIND_MANUAL
         )
 
+        rows = []
+        electricity_debt = Decimal("0")
+        other_debt = Decimal("0")
+        for charge, debt in allocation:
+            category = charge.charge_type.category
+            is_power = category == ChargeType.TYPE_ELECTRICITY
+            if is_power:
+                electricity_debt += debt
+            else:
+                other_debt += debt
+            rows.append({
+                "id": charge.pk,
+                "charge_type_name": charge.charge_type.name,
+                # Делить на группы по категории, а не по названию: название
+                # задаёт казначей, и «Электричество» вместо «Электроэнергия»
+                # молча увело бы сумму не в ту колонку.
+                "category": category,
+                "period_label": str(charge.period),
+                "plot_number": charge.plot.number,
+                "amount": charge.amount,
+                "paid_amount": charge.paid_amount,
+                "debt": debt,
+                # Основание начисления за свет: сколько кВт·ч и по какому тарифу.
+                "kwh": charge.kwh,
+                "tariff": charge.tariff,
+            })
+
         return Response({
-            "total_debt": sum((amount for _, amount in allocation), start=0) or 0,
-            "charges": [
-                {
-                    "id": charge.pk,
-                    "charge_type_name": charge.charge_type.name,
-                    "period_label": str(charge.period),
-                    "plot_number": charge.plot.number,
-                    "amount": charge.amount,
-                    "paid_amount": charge.paid_amount,
-                    "debt": debt,
-                }
-                for charge, debt in allocation
-            ],
+            "total_debt": electricity_debt + other_debt,
+            "electricity_debt": electricity_debt,
+            "other_debt": other_debt,
+            "charges": rows,
+            "meters": _member_meters(request),
             "online_available": online_available,
             "provider": (
                 PaymentProviderPublicSerializer(provider).data
@@ -128,7 +188,13 @@ class PayView(APIView):
                 )
             charges = [c for c in charges if c.pk in set(requested)]
 
-        allocation = build_debt_allocation(charges)
+        try:
+            allocation = build_debt_allocation(
+                charges, amount=serializer.validated_data.get("amount")
+            )
+        except PaymentError as exc:
+            return Response({"detail": str(exc)},
+                            status=status.HTTP_400_BAD_REQUEST)
         if not allocation:
             return Response(
                 {"detail": "Задолженности нет."},
