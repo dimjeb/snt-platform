@@ -69,3 +69,43 @@ class OrganizationMiddleware:
                 request.org = getattr(user, "organization", None)
 
         return self.get_response(request)
+
+
+class PasswordChangeRequiredMiddleware:
+    """
+    Пока временный пароль не сменён, API закрыт.
+
+    Проверка глобальная и живёт в middleware, а не в правах DRF: у вьюсетов
+    свои permission_classes, они перекрывают умолчание, и один забытый
+    вьюсет означал бы дыру. Здесь же мимо не пройдёт ничего.
+
+    Открыты только вход, обновление токена, профиль и сама смена пароля —
+    иначе человек не смог бы выполнить то, чего от него требуют.
+    """
+
+    EXEMPT_PREFIXES = (
+        "/api/auth/token/",
+        "/api/auth/change-password/",
+        "/api/me/",
+    )
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        path = request.path
+        if path.startswith("/api/") and not path.startswith(self.EXEMPT_PREFIXES):
+            user = getattr(request, "user", None)
+            if not (user and user.is_authenticated):
+                user = _get_jwt_user(request)
+            if user and user.is_authenticated and getattr(
+                user, "must_change_password", False
+            ):
+                return JsonResponse(
+                    {
+                        "detail": "Сначала смените временный пароль.",
+                        "must_change_password": True,
+                    },
+                    status=403,
+                )
+        return self.get_response(request)

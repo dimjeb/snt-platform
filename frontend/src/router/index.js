@@ -9,6 +9,13 @@ const routes = [
     meta: { public: true },
   },
   {
+    // Вне MainLayout: пока пароль временный, показывать меню разделов
+    // бессмысленно — API на них всё равно отвечает 403.
+    path: '/change-password',
+    component: () => import('pages/ChangePasswordPage.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
     path: '/',
     component: () => import('layouts/MainLayout.vue'),
     meta: { requiresAuth: true },
@@ -72,6 +79,14 @@ export default defineRouter(function ({ store }) {
       if (to.path === '/login') return true
       return '/login'
     }
+
+    // Временный пароль: до смены не пускаем никуда, кроме самой смены.
+    // Сервер это тоже проверяет (PasswordChangeRequiredMiddleware), здесь
+    // лишь чтобы человек видел форму, а не череду ошибок доступа.
+    if (auth.user?.must_change_password) {
+      return to.path === '/change-password' ? true : '/change-password'
+    }
+    if (to.path === '/change-password') return true
 
     if (to.meta.roles && !to.meta.roles.includes(auth.user?.role)) {
       return '/dashboard'

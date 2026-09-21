@@ -28,6 +28,15 @@ api.interceptors.response.use(
   (r) => r,
   async (error) => {
     const original = error.config
+    // Сервер закрыл доступ до смены временного пароля — ведём на форму.
+    if (
+      error.response?.status === 403 &&
+      error.response?.data?.must_change_password &&
+      window.location.pathname !== '/change-password'
+    ) {
+      window.location.assign('/change-password')
+      return Promise.reject(error)
+    }
     if (error.response?.status === 401 && !original._retry) {
       original._retry = true
       const auth = useAuthStore()

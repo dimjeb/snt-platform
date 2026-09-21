@@ -49,6 +49,9 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "core.middleware.OrganizationMiddleware",  # прикрепляет org к request
+    # Держать сразу после OrganizationMiddleware: обе разбирают JWT вручную,
+    # потому что DRF аутентифицирует уже после всех middleware.
+    "core.middleware.PasswordChangeRequiredMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]

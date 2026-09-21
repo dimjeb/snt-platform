@@ -116,6 +116,11 @@
             <q-item-section>Показания счётчика</q-item-section>
           </q-item>
 
+          <q-item clickable v-ripple to="/change-password" class="snt-nav-item">
+            <q-item-section avatar><q-icon name="lock_reset" /></q-item-section>
+            <q-item-section>Сменить пароль</q-item-section>
+          </q-item>
+
           <!-- Django Admin — только для суперадмина -->
           <template v-if="auth.isSuperAdmin">
             <div class="snt-nav-group-label">Система</div>

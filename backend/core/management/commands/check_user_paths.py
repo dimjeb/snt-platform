@@ -201,6 +201,8 @@ class Command(BaseCommand):
 
         self._check_audit(c, CH)
 
+        self._check_forced_password(c)
+
         # ---------------- Казначей ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("КАЗНАЧЕЙ"))
         r = get("/api/members/?page_size=1", TR)
@@ -359,6 +361,81 @@ class Command(BaseCommand):
                     "@" not in scrub("почта ivan@example.ru"))
         self.verify("фильтр логов не трогает IP и номера страниц",
                     scrub("192.168.103.160 page=2") == "192.168.103.160 page=2")
+
+    def _check_forced_password(self, c):
+        """
+        Временный пароль: до смены API закрыт.
+
+        Проверка живёт здесь, а не только в тестах команды выдачи учёток,
+        потому что защита глобальная: любой новый раздел API обязан
+        оказаться закрытым сам, без отдельной строчки в своём вьюсете.
+        """
+        import json as _json
+
+        from accounts.models import User
+        from organizations.models import Organization
+
+        self.stdout.write(self.style.MIGRATE_HEADING("ВРЕМЕННЫЙ ПАРОЛЬ"))
+
+        org = User.objects.get(username="chairman_berezka").organization
+        temp = "qwrt-2468-mnpz"
+        user, _ = User.objects.get_or_create(
+            username="__temp_pwd_check__",
+            defaults={"organization": org, "role": User.ROLE_MEMBER},
+        )
+        user.organization = org
+        user.role = User.ROLE_MEMBER
+        user.is_active = True
+        user.must_change_password = True
+        user.set_password(temp)
+        user.save()
+
+        r = c.post("/api/auth/token/",
+                   data=_json.dumps({"username": user.username, "password": temp}),
+                   content_type="application/json")
+        self.verify("вход с временным паролем работает", r.status_code == 200,
+                    f"HTTP {r.status_code}")
+        if r.status_code != 200:
+            return
+        hdr = {"HTTP_AUTHORIZATION": f"Bearer {self._json(r)['access']}"}
+
+        data = self._json(c.get("/api/me/", **hdr)) or {}
+        self.verify("профиль отдаёт признак временного пароля",
+                    data.get("must_change_password") is True)
+
+        closed = []
+        for url in ("/api/plots/", "/api/members/", "/api/billing/periods/",
+                    "/api/electricity/readings/", "/api/payments/my-debt/"):
+            resp = c.get(url, **hdr)
+            body = self._json(resp) or {}
+            closed.append(
+                resp.status_code == 403 and body.get("must_change_password") is True
+            )
+        self.verify("разделы закрыты до смены пароля", all(closed),
+                    f"открытых: {closed.count(False)}")
+
+        r = c.post("/api/auth/change-password/",
+                   data=_json.dumps({"old_password": temp, "new_password": "12345678"}),
+                   content_type="application/json", **hdr)
+        self.verify("слабый новый пароль отклоняется", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+
+        new = "Sadovoe-Tovarischestvo-26"
+        r = c.post("/api/auth/change-password/",
+                   data=_json.dumps({"old_password": temp, "new_password": new}),
+                   content_type="application/json", **hdr)
+        self.verify("смена пароля проходит", r.status_code == 200,
+                    f"HTTP {r.status_code}")
+
+        r = c.get("/api/plots/", **hdr)
+        self.verify("после смены доступ открывается", r.status_code == 200,
+                    f"HTTP {r.status_code}")
+
+        r = c.post("/api/auth/token/",
+                   data=_json.dumps({"username": user.username, "password": temp}),
+                   content_type="application/json")
+        self.verify("временный пароль перестаёт действовать", r.status_code == 401,
+                    f"HTTP {r.status_code}")
 
     def _check_payments(self, c, member_headers, chairman_headers):
         """
