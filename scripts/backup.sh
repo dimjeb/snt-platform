@@ -21,13 +21,42 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-[[ -f .env ]] && set -a && source .env && set +a
+
+# ── Чтение .env ───────────────────────────────────────────────────────────────
+# Файл .env для Docker Compose — это НЕ shell-скрипт: значения там пишутся
+# без кавычек, и в них законно встречаются пробелы, < > # и кириллица.
+# Например DEFAULT_FROM_EMAIL=СНТ-Платформа <noreply@example.ru>.
+# Прежняя версия делала `source .env`, bash видел в < перенаправление ввода,
+# спотыкался на этой строке и молча терял всё, что шло ниже, — включая
+# BACKUP_PASSPHRASE. Поэтому читаем файл как данные и ничего не исполняем.
+env_get() {
+  local key="$1" line value
+  [[ -f .env ]] || return 1
+  # Последнее вхождение ключа — так же, как это делает docker compose.
+  line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?${key}=" .env | tail -n1) || return 1
+  [[ -n "$line" ]] || return 1
+  value=${line#*=}
+  # Снимаем обрамляющие кавычки, если они есть, и хвостовые пробелы.
+  value=${value%"${value##*[![:space:]]}"}
+  if [[ ${#value} -ge 2 && ${value:0:1} == '"' && ${value: -1} == '"' ]]; then
+    value=${value:1:-1}
+  elif [[ ${#value} -ge 2 && ${value:0:1} == "'" && ${value: -1} == "'" ]]; then
+    value=${value:1:-1}
+  fi
+  printf '%s' "$value"
+}
+
+BACKUP_PASSPHRASE="${BACKUP_PASSPHRASE:-$(env_get BACKUP_PASSPHRASE || true)}"
+YANDEX_DISK_TOKEN="${YANDEX_DISK_TOKEN:-$(env_get YANDEX_DISK_TOKEN || true)}"
+POSTGRES_USER="${POSTGRES_USER:-$(env_get POSTGRES_USER || true)}"
+POSTGRES_DB="${POSTGRES_DB:-$(env_get POSTGRES_DB || true)}"
+KEEP_DAYS="${BACKUP_KEEP_DAYS:-$(env_get BACKUP_KEEP_DAYS || true)}"
 
 : "${BACKUP_PASSPHRASE:?не задан BACKUP_PASSPHRASE в .env}"
 : "${YANDEX_DISK_TOKEN:?не задан YANDEX_DISK_TOKEN в .env}"
 POSTGRES_USER="${POSTGRES_USER:-snt}"
 POSTGRES_DB="${POSTGRES_DB:-snt}"
-KEEP_DAYS="${BACKUP_KEEP_DAYS:-14}"
+KEEP_DAYS="${KEEP_DAYS:-14}"
 
 LOCAL_DIR="/var/backups/snt"
 REMOTE_DIR="disk:/Бэкапы/snt-platform"
