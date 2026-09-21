@@ -52,17 +52,33 @@ class PaymentIntentSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class PayAllocationSerializer(serializers.Serializer):
+    """Сколько платить за конкретное начисление."""
+
+    charge_id = serializers.IntegerField()
+    amount = serializers.DecimalField(
+        max_digits=12, decimal_places=2, min_value=Decimal("0")
+    )
+
+
 class PayRequestSerializer(serializers.Serializer):
     """
     Запрос на оплату.
 
     charge_ids необязателен: без него берётся весь долг.
 
-    amount тоже необязателен и означает частичную оплату — заплатить
-    меньше полного долга. Разносит сумму по начислениям сервер
-    (build_debt_allocation), клиент лишь называет размер платежа: иначе
-    можно было бы прислать копейку и указать, какое начисление ею
-    закрыть. Больше фактического долга сумма быть не может.
+    amount — частичная оплата одной суммой: сколько всего заплатить.
+    Разносит её по начислениям сервер (build_debt_allocation), от старых
+    к новым.
+
+    allocations — разбивка, заданная человеком построчно:
+    [{"charge_id": 1, "amount": "500.00"}, ...]. Нужна, когда он хочет
+    сам решить, за что платит. Каждая строка проверяется отдельно:
+    начисление должно принадлежать ему, а сумма не может превышать его
+    долг. Нулевые строки просто выпадают.
+
+    amount и allocations вместе не принимаются: два источника одной и
+    той же суммы рано или поздно разойдутся.
     """
 
     charge_ids = serializers.ListField(
@@ -72,6 +88,14 @@ class PayRequestSerializer(serializers.Serializer):
         max_digits=12, decimal_places=2, required=False,
         min_value=Decimal("1"),
     )
+    allocations = PayAllocationSerializer(many=True, required=False)
+
+    def validate(self, attrs):
+        if attrs.get("allocations") and attrs.get("amount") is not None:
+            raise serializers.ValidationError(
+                "Укажите либо суммы по начислениям, либо общую сумму, но не оба."
+            )
+        return attrs
 
 
 class ObligatoryPaymentSerializer(serializers.ModelSerializer):

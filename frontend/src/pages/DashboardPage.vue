@@ -98,7 +98,7 @@
             <q-space />
             <div class="text-subtitle2 debt-amount">{{ formatMoney(myDebtTotal) }} ₽</div>
           </div>
-          <q-list separator dense>
+          <q-list separator>
             <q-item v-for="d in myDebts" :key="d.id">
               <q-item-section avatar>
                 <q-icon
@@ -117,70 +117,67 @@
                 <q-item-label caption v-if="Number(d.paid_amount) > 0" class="text-green-8">
                   оплачено {{ formatMoney(d.paid_amount) }} из {{ formatMoney(d.amount) }} ₽
                 </q-item-label>
+                <q-item-label caption class="debt-amount">
+                  долг {{ formatMoney(d.debt) }} ₽
+                </q-item-label>
               </q-item-section>
-              <q-item-section side class="debt-amount">{{ formatMoney(d.debt) }} ₽</q-item-section>
+              <q-item-section side top style="min-width: 116px">
+                <q-input
+                  v-model="payInputs[d.id]"
+                  dense
+                  outlined
+                  type="number"
+                  inputmode="decimal"
+                  min="0"
+                  :max="Number(d.debt)"
+                  suffix="₽"
+                  :error="!!rowError(d)"
+                  :error-message="rowError(d)"
+                  hide-bottom-space
+                  input-class="text-right"
+                />
+              </q-item-section>
             </q-item>
           </q-list>
+
+          <div class="row items-center q-mt-md q-mb-sm">
+            <q-btn
+              flat dense size="sm" color="green-8"
+              label="Весь долг"
+              @click="fillAll"
+            />
+            <q-btn
+              flat dense size="sm" color="grey-7"
+              label="Очистить"
+              @click="clearAll"
+            />
+            <q-space />
+            <div class="text-subtitle1 text-weight-bold debt-amount">
+              Итого: {{ formatMoney(payTotal) }} ₽
+            </div>
+          </div>
 
           <q-btn
             v-if="onlineAvailable"
             color="green-8"
             icon="payments"
-            label="Оплатить"
-            class="full-width q-mt-md"
+            :label="payTotal > 0 ? `Оплатить ${formatMoney(payTotal)} ₽` : 'Оплатить'"
+            class="full-width"
             unelevated
-            @click="openPayDialog"
+            :loading="paying"
+            :disable="!payValid"
+            @click="payDebt"
           />
           <div v-else class="text-caption text-grey-6 q-mt-sm">
             Онлайн-оплата в этом СНТ не подключена — обратитесь к казначею.
           </div>
+          <div class="text-caption text-grey-6 q-mt-sm">
+            Суммы можно уменьшить или обнулить — заплатите столько, сколько
+            готовы сейчас.
+          </div>
         </q-card-section>
       </q-card>
 
-      <!-- Оплата: по умолчанию весь долг, но сумму можно уменьшить -->
-      <q-dialog v-model="payDialog">
-        <q-card style="min-width: 320px; max-width: 420px">
-          <q-card-section class="bg-green-8 text-white">
-            <div class="text-h6">Оплата</div>
-            <div class="text-caption">Задолженность {{ formatMoney(myDebtTotal) }} ₽</div>
-          </q-card-section>
-          <q-card-section class="q-gutter-sm">
-            <q-input
-              v-model="payAmount"
-              label="Сумма к оплате, ₽ *"
-              outlined
-              type="number"
-              inputmode="decimal"
-              min="1"
-              :max="myDebtTotal"
-              :error="!!payAmountError"
-              :error-message="payAmountError"
-            >
-              <template #prepend><q-icon name="payments" /></template>
-            </q-input>
-            <div class="text-caption text-grey-7">
-              Можно заплатить часть. Деньги погасят начисления по очереди,
-              начиная с самых старых.
-            </div>
-            <q-btn
-              flat dense size="sm" color="green-8"
-              :label="`Вся сумма — ${formatMoney(myDebtTotal)} ₽`"
-              @click="payAmount = String(myDebtTotal)"
-            />
-          </q-card-section>
-          <q-card-actions align="right">
-            <q-btn flat label="Отмена" v-close-popup />
-            <q-btn
-              color="green-8"
-              label="Перейти к оплате"
-              unelevated
-              :loading="paying"
-              :disable="!payAmountValid"
-              @click="payDebt"
-            />
-          </q-card-actions>
-        </q-card>
-      </q-dialog>
 
       <q-card flat bordered class="q-mb-md" v-if="!myDebts.length && debtsLoaded">
         <q-card-section class="text-center text-grey-6">
@@ -257,8 +254,8 @@ const onlineAvailable = ref(false)
 const debtsLoaded = ref(false)
 const paying = ref(false)
 const payResult = ref(null)
-const payDialog = ref(false)
-const payAmount = ref('')
+// Сколько платить за каждое начисление: { [charge_id]: строка из поля }
+const payInputs = ref({})
 
 function formatMoney(val) {
   if (!val) return '0'
@@ -285,23 +282,38 @@ const lastReadingLabel = computed(() => {
   return `показание ${formatKwh(latest.last_reading_value)} от ${d.toLocaleDateString('ru-RU')}`
 })
 
-const payAmountError = computed(() => {
-  if (payAmount.value === '') return ''
-  const v = Number(payAmount.value)
-  if (!Number.isFinite(v) || v <= 0) return 'Введите сумму больше нуля'
-  if (v > Number(myDebtTotal.value)) return `Не больше ${formatMoney(myDebtTotal.value)} ₽`
+// Ошибка конкретной строки. Потолок — долг именно этого начисления:
+// переплату по нему потом не с чем сверить. То же проверяет и сервер.
+function rowError(d) {
+  const raw = payInputs.value[d.id]
+  if (raw === '' || raw === undefined || raw === null) return ''
+  const v = Number(raw)
+  if (!Number.isFinite(v) || v < 0) return 'Неверно'
+  if (v > Number(d.debt)) return `Не больше ${formatMoney(d.debt)}`
   return ''
-})
+}
 
-const payAmountValid = computed(
-  () => payAmount.value !== '' && !payAmountError.value,
+const payTotal = computed(() =>
+  myDebts.value.reduce((sum, d) => {
+    const v = Number(payInputs.value[d.id])
+    return sum + (Number.isFinite(v) && v > 0 && !rowError(d) ? v : 0)
+  }, 0),
 )
 
-function openPayDialog() {
-  // По умолчанию предлагаем весь долг: частичная оплата — это выбор,
-  // а не то, что человек должен вводить каждый раз руками.
-  payAmount.value = String(myDebtTotal.value)
-  payDialog.value = true
+const payValid = computed(
+  () => payTotal.value > 0 && myDebts.value.every((d) => !rowError(d)),
+)
+
+function fillAll() {
+  const next = {}
+  for (const d of myDebts.value) next[d.id] = String(d.debt)
+  payInputs.value = next
+}
+
+function clearAll() {
+  const next = {}
+  for (const d of myDebts.value) next[d.id] = ''
+  payInputs.value = next
 }
 
 async function loadMyDebt() {
@@ -313,6 +325,9 @@ async function loadMyDebt() {
     otherDebt.value = Number(data.other_debt || 0)
     meters.value = data.meters || []
     onlineAvailable.value = !!data.online_available
+    // По умолчанию предлагаем заплатить всё: частичная оплата — это
+    // осознанный выбор, а не то, что надо набирать руками каждый раз.
+    fillAll()
   } catch (e) {
     console.error(e)
   } finally {
@@ -323,10 +338,12 @@ async function loadMyDebt() {
 async function payDebt() {
   paying.value = true
   try {
-    // Сумму разносит по начислениям сервер; здесь только её размер.
-    const { data } = await api.post('/payments/pay/', {
-      amount: Number(payAmount.value),
-    })
+    // Отправляем разбивку построчно; сервер перепроверяет каждую сумму
+    // по реальному долгу начисления и принадлежность самого начисления.
+    const allocations = myDebts.value
+      .map((d) => ({ charge_id: d.id, amount: Number(payInputs.value[d.id]) }))
+      .filter((a) => Number.isFinite(a.amount) && a.amount > 0)
+    const { data } = await api.post('/payments/pay/', { allocations })
     if (data.confirmation_url) {
       // Уходим на форму провайдера; вернёмся на /dashboard?payment=<id>
       window.location.href = data.confirmation_url
@@ -340,7 +357,6 @@ async function payDebt() {
     })
   } finally {
     paying.value = false
-    payDialog.value = false
   }
 }
 

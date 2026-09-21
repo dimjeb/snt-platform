@@ -17,6 +17,10 @@ from django.utils import timezone
 log = logging.getLogger(__name__)
 
 
+class ForeignChargeError(Exception):
+    """Начисление существует, но принадлежит другому человеку."""
+
+
 class PaymentError(Exception):
     """Платёж провести нельзя — с понятной причиной для пользователя."""
 
@@ -62,6 +66,52 @@ def build_debt_allocation(charges, amount=None):
         partial.append((charge, take))
         remaining -= take
     return partial
+
+
+def build_explicit_allocation(charges, items):
+    """
+    Разнесение, заданное человеком построчно: за каждое начисление своя сумма.
+
+    charges — начисления этого члена; всё, чего в этом списке нет, чужое.
+    items — список словарей {charge_id, amount}.
+
+    Проверяем каждую строку отдельно: принадлежность и потолок по долгу.
+    Клиент называет суммы, но ни одна из них не может превысить реальный
+    долг начисления — иначе переплату не с чем сверить, а начисление
+    закрылось бы на сумму, которой никто не должен.
+    """
+    by_id = {charge.pk: charge for charge in charges}
+    allocation = []
+    seen = set()
+
+    for item in items:
+        charge_id = item.get("charge_id")
+        amount = Decimal(item.get("amount") or 0).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if amount <= 0:
+            # Ноль — это «за это начисление не плачу», строка просто
+            # выпадает, а не становится ошибкой.
+            continue
+        if charge_id in seen:
+            raise PaymentError("Одно и то же начисление указано дважды.")
+        seen.add(charge_id)
+
+        charge = by_id.get(charge_id)
+        if charge is None:
+            raise ForeignChargeError("Среди выбранных начислений есть чужие.")
+
+        debt = charge.debt
+        if amount > debt:
+            raise PaymentError(
+                f"По начислению «{charge.charge_type.name}» "
+                f"к оплате не больше {debt} ₽."
+            )
+        allocation.append((charge, amount))
+
+    if not allocation:
+        raise PaymentError("Не указано ни одной суммы к оплате.")
+    return allocation
 
 
 @transaction.atomic

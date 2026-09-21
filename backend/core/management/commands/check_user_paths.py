@@ -556,6 +556,60 @@ class Command(BaseCommand):
             self.verify("частичный платёж не закрывает долг целиком", left > 0,
                         f"остаток {left}")
 
+        # ---------------- Оплата построчно ----------------
+        rows = debt.get("charges") or []
+        if rows:
+            target = rows[0]
+            target_debt = Decimal(str(target["debt"]))
+            piece = (target_debt / 2).quantize(Decimal("0.01"),
+                                               rounding=ROUND_HALF_UP)
+
+            r = c.post("/api/payments/pay/", data=_json.dumps({
+                "allocations": [
+                    {"charge_id": target["id"], "amount": str(target_debt + Decimal("1"))}
+                ]
+            }), content_type="application/json", **member_headers)
+            self.verify("по строке нельзя заплатить больше её долга",
+                        r.status_code == 400, f"HTTP {r.status_code}")
+
+            if foreign is not None:
+                r = c.post("/api/payments/pay/", data=_json.dumps({
+                    "allocations": [{"charge_id": foreign.pk, "amount": "10.00"}]
+                }), content_type="application/json", **member_headers)
+                self.verify("чужое начисление в разбивке отклоняется",
+                            r.status_code == 403, f"HTTP {r.status_code}")
+
+            r = c.post("/api/payments/pay/", data=_json.dumps({
+                "allocations": [{"charge_id": target["id"], "amount": str(piece)}]
+            }), content_type="application/json", **member_headers)
+            row_intent = self._json(r) or {}
+            self.verify("намерение по разбивке создаётся",
+                        r.status_code == 200
+                        and Decimal(str(row_intent.get("amount"))) == piece,
+                        f"HTTP {r.status_code}, сумма {row_intent.get('amount')}")
+
+            if row_intent.get("id"):
+                inv_r = str(row_intent["id"])
+                amt_r = str(row_intent["amount"])
+                sig_r = hashlib.md5(f"{amt_r}:{inv_r}:P2".encode()).hexdigest()
+                c.post(f"/api/payments/webhook/{provider.pk}/",
+                       data={"OutSum": amt_r, "InvId": inv_r,
+                             "SignatureValue": sig_r})
+                debt = self._json(
+                    c.get("/api/payments/my-debt/", **member_headers)
+                ) or {}
+                same = next(
+                    (x for x in (debt.get("charges") or [])
+                     if x["id"] == target["id"]), None
+                )
+                self.verify(
+                    "оплата по строке гасит именно это начисление",
+                    same is not None
+                    and Decimal(str(same["debt"])) == target_debt - piece,
+                    f"было {target_debt}, стало "
+                    f"{same['debt'] if same else 'строка пропала'}, платили {piece}",
+                )
+
         r = c.post("/api/payments/pay/", data="{}",
                    content_type="application/json", **member_headers)
         intent = self._json(r) or {}

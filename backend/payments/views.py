@@ -29,7 +29,15 @@ from .serializers import (
     PaymentProviderPublicSerializer,
     PayRequestSerializer,
 )
-from .services import build_debt_allocation, confirm_intent, create_intent, fail_intent, PaymentError
+from .services import (
+    build_debt_allocation,
+    build_explicit_allocation,
+    confirm_intent,
+    create_intent,
+    fail_intent,
+    ForeignChargeError,
+    PaymentError,
+)
 
 log = logging.getLogger(__name__)
 
@@ -188,10 +196,19 @@ class PayView(APIView):
                 )
             charges = [c for c in charges if c.pk in set(requested)]
 
+        explicit = serializer.validated_data.get("allocations")
         try:
-            allocation = build_debt_allocation(
-                charges, amount=serializer.validated_data.get("amount")
-            )
+            if explicit:
+                allocation = build_explicit_allocation(charges, explicit)
+            else:
+                allocation = build_debt_allocation(
+                    charges, amount=serializer.validated_data.get("amount")
+                )
+        except ForeignChargeError as exc:
+            # Не «не найдено», а именно отказ: начисление существует,
+            # но принадлежит не этому человеку.
+            return Response({"detail": str(exc)},
+                            status=status.HTTP_403_FORBIDDEN)
         except PaymentError as exc:
             return Response({"detail": str(exc)},
                             status=status.HTTP_400_BAD_REQUEST)
