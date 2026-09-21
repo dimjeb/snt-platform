@@ -97,29 +97,15 @@ class Command(BaseCommand):
         client = Client(SERVER_NAME=server_name)
         self.stdout.write(f"Хост запросов: {server_name}")
 
-        def auth(username):
-            try:
-                user = User.objects.get(username=username)
-            except User.DoesNotExist:
-                return None
-            return {"HTTP_AUTHORIZATION": f"Bearer {AccessToken.for_user(user)}"}
-
-        accounts = {
-            "chairman": auth("chairman_berezka"),
-            "treasurer": auth("treasurer_berezka"),
-            "member": auth("member_berezka"),
-            "admin": auth("admin"),
-        }
-        missing = [k for k, v in accounts.items() if v is None]
-        if missing:
-            self.stdout.write(self.style.ERROR(
-                f"Нет учётных записей: {', '.join(missing)}. "
-                "Сначала выполните seed_test_data."
-            ))
-            raise SystemExit(1)
-
         try:
             with transaction.atomic():
+                # Проверка строит себе собственную организацию и работает
+                # только с ней. Так она, во-первых, не зависит от посевных
+                # данных (после seed_test_data --clear их нет, а проверять
+                # выкат надо именно на боевом), во-вторых — не трогает
+                # настоящие данные: иначе массовое начисление прошлось бы
+                # по всем реальным участкам. Всё созданное откатывается.
+                accounts = self._build_fixture()
                 self._run(client, accounts)
                 raise _Rollback()
         except _Rollback:
@@ -134,6 +120,103 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.ERROR(f"  • {b}"))
             raise SystemExit(1)
         self.stdout.write(self.style.SUCCESS("Все пользовательские пути проходят."))
+
+    def _build_fixture(self):
+        """
+        Создаёт временную организацию со всем, что нужно проверкам.
+
+        Возвращает заголовки авторизации для четырёх ролей. Ничего из
+        созданного здесь не остаётся: вызывающий код откатывает транзакцию.
+        """
+        from datetime import date
+
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        from accounts.models import User
+        from billing.models import BillingPeriod, Charge, ChargeType
+        from electricity.models import EnergyTariff, Meter, MeterReading
+        from members.models import Member, Plot, PlotOwnership
+        from organizations.models import Organization
+
+        org = Organization.objects.create(
+            name="Проверка развёртывания", is_active=True,
+        )
+
+        # Три члена: проверкам нужен и page_size=3, и второй собственник
+        # для общей собственности.
+        members = [
+            Member.objects.create(
+                organization=org, last_name=f"Проверкин{i}", first_name="Тест",
+                phone="", status=Member.STATUS_ACTIVE,
+            )
+            for i in range(1, 4)
+        ]
+        plots = [
+            Plot.objects.create(
+                organization=org, number=f"ПР-{i}", area_sotok="6.00",
+            )
+            for i in range(1, 4)
+        ]
+        for member, plot in zip(members, plots):
+            PlotOwnership.objects.create(
+                organization=org, plot=plot, member=member,
+                date_from=date(2024, 1, 1),
+            )
+
+        period = BillingPeriod.objects.create(
+            organization=org, year=2024, month=8, status=BillingPeriod.STATUS_OPEN,
+        )
+        charge_type = ChargeType.objects.create(
+            organization=org, name="Членский взнос",
+            category=ChargeType.TYPE_MEMBERSHIP,
+        )
+        # Долг у первого члена — на нём проверяется платёжный путь.
+        Charge.objects.create(
+            organization=org, period=period, plot=plots[0],
+            charge_type=charge_type, amount="2000.00",
+            description="Проверка развёртывания",
+        )
+
+        EnergyTariff.objects.create(
+            organization=org, valid_from=date(2024, 1, 1), price_per_kwh="5.0000",
+        )
+        main = Meter.objects.create(
+            organization=org, plot=None, is_main=True, serial_number="ПР-ГЛАВНЫЙ",
+        )
+        meters = [main] + [
+            Meter.objects.create(
+                organization=org, plot=plot, serial_number=f"ПР-СЧ-{plot.number}",
+            )
+            for plot in plots
+        ]
+        # По два показания на счётчик: расчёт берёт разницу, одного мало.
+        for idx, meter in enumerate(meters):
+            base = 1000 * (idx + 1)
+            MeterReading.objects.create(
+                organization=org, meter=meter, date=date(2024, 7, 1), value=base,
+            )
+            MeterReading.objects.create(
+                organization=org, meter=meter, date=date(2024, 8, 1),
+                value=base + 100,
+            )
+
+        def make(username, role, member=None, superuser=False):
+            user = User.objects.create(
+                username=username,
+                organization=None if superuser else org,
+                role=role, member=member, is_active=True,
+                is_superuser=superuser, is_staff=superuser,
+            )
+            return {"HTTP_AUTHORIZATION": f"Bearer {AccessToken.for_user(user)}"}
+
+        self._fixture_org = org
+        self._fixture_members = members
+        return {
+            "chairman": make("__check_chairman__", User.ROLE_CHAIRMAN),
+            "treasurer": make("__check_treasurer__", User.ROLE_TREASURER),
+            "member": make("__check_member__", User.ROLE_MEMBER, member=members[0]),
+            "admin": make("__check_admin__", User.ROLE_SUPERADMIN, superuser=True),
+        }
 
     def _run(self, c, acc):
         CH, TR, ME, AD = acc["chairman"], acc["treasurer"], acc["member"], acc["admin"]
@@ -258,8 +341,7 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.MIGRATE_HEADING("ОБЩАЯ СОБСТВЕННОСТЬ"))
 
-        chairman = User.objects.get(username="chairman_berezka")
-        org = chairman.organization
+        org = self._fixture_org
         plot = (
             Plot.objects.filter(organization=org, ownerships__date_to__isnull=True)
             .distinct().first()
@@ -377,7 +459,7 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.MIGRATE_HEADING("ВРЕМЕННЫЙ ПАРОЛЬ"))
 
-        org = User.objects.get(username="chairman_berezka").organization
+        org = self._fixture_org
         temp = "qwrt-2468-mnpz"
         user, _ = User.objects.get_or_create(
             username="__temp_pwd_check__",
@@ -479,12 +561,27 @@ class Command(BaseCommand):
         self.verify("долг члена считается", r.status_code == 200,
                     f"HTTP {r.status_code}, долг {debt.get('total_debt')}")
 
-        # Чужое начисление оплатить нельзя
-        foreign = (
-            Charge.objects.filter(organization_id=org_id)
-            .exclude(plot__ownerships__member__user_account__username="member_berezka")
+        # Чужое начисление оплатить нельзя. Заводим его тут же, на участке
+        # другого члена той же организации: так проверка не зависит от того,
+        # что где-то уже есть подходящее начисление.
+        from billing.models import BillingPeriod, ChargeType
+        from members.models import Plot
+
+        other_plot = (
+            Plot.objects.filter(organization_id=org_id)
+            .exclude(ownerships__member_id=me.get("member_id"))
+            .distinct()
             .first()
         )
+        foreign = None
+        if other_plot is not None:
+            foreign = Charge.objects.create(
+                organization_id=org_id,
+                period=BillingPeriod.objects.filter(organization_id=org_id).first(),
+                plot=other_plot,
+                charge_type=ChargeType.objects.filter(organization_id=org_id).first(),
+                amount="500.00", description="Чужое начисление (проверка)",
+            )
         if foreign is not None:
             r = c.post("/api/payments/pay/",
                        data=_json.dumps({"charge_ids": [foreign.pk]}),
@@ -495,9 +592,6 @@ class Command(BaseCommand):
         if not (debt.get("charges") or []):
             # Долга может не быть — это не повод пропускать сквозной сценарий.
             # Заводим начисление сами: транзакция всё равно откатится.
-            from billing.models import BillingPeriod, ChargeType
-            from members.models import Plot
-
             plot = Plot.objects.filter(
                 organization_id=org_id,
                 ownerships__member_id=me.get("member_id"),
