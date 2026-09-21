@@ -2,8 +2,13 @@
 Импорт реестра членов СНТ из таблицы.
 
     docker compose exec -T backend python manage.py import_members \
-        --file /tmp/reestr.xlsx --org "СНТ «Здоровье»" \
-        --overrides /app/data/reestr-overrides.json --dry-run
+        --file /app/reestr.xlsx --org 'ТСН "Здоровье"' \
+        --overrides /app/data/reestr-zdorovie-overrides.json --dry-run
+
+Имя организации подставляется как оно записано в базе, целиком. Если в нём
+есть кавычки — оборачивать в одинарные, иначе шелл их проглотит. Посмотреть
+точное написание: manage.py shell -c "from organizations.models import
+Organization; print([o.name for o in Organization.objects.all()])"
 
 Ожидаемые столбцы (первая строка — заголовок):
     № участка | ФИО | кол-во соток | телефон | доп телефон
