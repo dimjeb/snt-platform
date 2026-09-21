@@ -38,8 +38,18 @@ class MemberShortSerializer(serializers.ModelSerializer):
 
 
 class PlotSerializer(serializers.ModelSerializer):
+    # current_owner — первый собственник, оставлен для клиентов, которым
+    # достаточно одного имени. Полный состав — в current_owners.
     current_owner = serializers.SerializerMethodField(read_only=True)
-    # write-only: передаётся при создании/редактировании для назначения владельца
+    current_owners = serializers.SerializerMethodField(read_only=True)
+    # write-only: состав собственников целиком. Пустой список снимает всех.
+    current_owner_ids = serializers.ListField(
+        child=serializers.IntegerField(), write_only=True, required=False,
+        allow_empty=True,
+    )
+    # write-only, для одного собственника. Ровно то же самое, что
+    # current_owner_ids=[id]: значение задаёт состав целиком, а не
+    # добавляет ещё одного.
     current_owner_id = serializers.IntegerField(
         write_only=True, required=False, allow_null=True
     )
@@ -55,43 +65,63 @@ class PlotSerializer(serializers.ModelSerializer):
             return {"id": owner.id, "full_name": owner.full_name}
         return None
 
-    def _set_owner(self, plot, owner_id):
-        """Устанавливает текущего владельца участка через PlotOwnership."""
-        current = plot.ownerships.filter(date_to__isnull=True).first()
-        if owner_id is None:
-            # Снять владельца: закрыть текущее владение
-            if current:
-                current.date_to = date.today()
-                current.save()
-            return
-        # Проверяем, нужно ли что-то менять
-        if current and current.member_id == owner_id:
-            return  # уже этот владелец — ничего не делаем
-        # Закрываем предыдущее владение
-        if current:
-            current.date_to = date.today()
-            current.save()
-        # Создаём новое владение
-        PlotOwnership.objects.create(
-            plot=plot,
-            member_id=owner_id,
-            organization=plot.organization,
-            date_from=date.today(),
-        )
+    def get_current_owners(self, obj):
+        return [
+            {"id": m.id, "full_name": m.full_name} for m in obj.current_owners
+        ]
+
+    def _set_owners(self, plot, owner_ids):
+        """
+        Приводит состав текущих собственников участка к заданному.
+
+        Владения тех, кого в списке нет, закрываются сегодняшней датой —
+        история владения сохраняется. Тем, кто уже числится, ничего не
+        меняем: иначе каждое сохранение формы плодило бы в истории
+        владение длиной в ноль дней.
+        """
+        target = set(owner_ids or [])
+        current = list(plot.ownerships.filter(date_to__isnull=True))
+        for ownership in current:
+            if ownership.member_id not in target:
+                ownership.date_to = date.today()
+                ownership.save(update_fields=["date_to", "updated_at"])
+        existing = {o.member_id for o in current}
+        for member_id in target - existing:
+            PlotOwnership.objects.create(
+                plot=plot,
+                member_id=member_id,
+                organization=plot.organization,
+                date_from=date.today(),
+            )
+
+    def _owner_ids_from_input(self, validated_data):
+        """
+        Достаёт состав собственников из запроса.
+
+        Возвращает (передан ли состав, список id). Клиент может прислать
+        либо current_owner_ids (список), либо current_owner_id (одно
+        значение или null) — второе оставлено для совместимости.
+        """
+        owner_ids = validated_data.pop("current_owner_ids", None)
+        owner_id = validated_data.pop("current_owner_id", None)
+        if "current_owner_ids" in self.initial_data:
+            return True, list(owner_ids or [])
+        if "current_owner_id" in self.initial_data:
+            return True, [owner_id] if owner_id is not None else []
+        return False, []
 
     def create(self, validated_data):
-        owner_id = validated_data.pop("current_owner_id", None)
+        given, owner_ids = self._owner_ids_from_input(validated_data)
         plot = super().create(validated_data)
-        if owner_id is not None:
-            self._set_owner(plot, owner_id)
+        if given and owner_ids:
+            self._set_owners(plot, owner_ids)
         return plot
 
     def update(self, instance, validated_data):
-        owner_id = validated_data.pop("current_owner_id", None)
+        given, owner_ids = self._owner_ids_from_input(validated_data)
         plot = super().update(instance, validated_data)
-        # owner_id передан явно клиентом (None = снять, число = назначить/сменить)
-        if "current_owner_id" in self.initial_data:
-            self._set_owner(plot, owner_id)
+        if given:
+            self._set_owners(plot, owner_ids)
         return plot
 
 

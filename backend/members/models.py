@@ -32,10 +32,10 @@ class Member(OrgModel):
         ordering = ["last_name", "first_name"]
 
     def __str__(self):
-        parts = [self.last_name, self.first_name]
-        if self.patronymic:
-            parts.append(self.patronymic)
-        return " ".join(parts)
+        # Пустые части отбрасываем: в реестрах встречаются записи, где известно
+        # только имя, и " Анна" с ведущим пробелом — это мусор в каждом списке.
+        parts = [self.last_name, self.first_name, self.patronymic]
+        return " ".join(p for p in parts if p)
 
     @property
     def full_name(self):
@@ -74,17 +74,36 @@ class Plot(OrgModel):
         return f"Участок №{self.number}"
 
     @property
+    def current_owners(self):
+        """
+        Все текущие собственники участка.
+
+        Участок может быть в общей собственности — в реестрах СНТ это
+        обычное дело (супруги, наследники). Модель это допускает всегда:
+        у PlotOwnership нет ограничения "одно открытое владение".
+
+        Фильтруем в памяти, а не через .filter(): тот создаёт новый
+        queryset и ходит в базу отдельно на каждый участок, сводя на нет
+        prefetch_related("ownerships__member") во вьюсете. На странице
+        из 50 участков это давало сотню лишних запросов.
+        """
+        return [o.member for o in self.ownerships.all() if o.date_to is None]
+
+    @property
     def current_owner(self):
-        # Фильтруем в памяти, а не через .filter(): тот создаёт новый
-        # queryset и ходит в базу отдельно на каждый участок, сводя на нет
-        # prefetch_related("ownerships__member") во вьюсете. На странице
-        # из 50 участков это давало сотню лишних запросов.
-        # Порядок ownerships — "-date_from", поэтому первое открытое
-        # владение и есть текущее.
-        for ownership in self.ownerships.all():
-            if ownership.date_to is None:
-                return ownership.member
-        return None
+        """
+        Первый из текущих собственников.
+
+        Порядок ownerships — "-date_from", то есть это последний по дате
+        вступивший. Для участков с одним владельцем — просто владелец.
+        Там, где важен полный состав, нужен current_owners.
+        """
+        owners = self.current_owners
+        return owners[0] if owners else None
+
+    @property
+    def current_owners_display(self):
+        return ", ".join(o.full_name for o in self.current_owners) or "—"
 
 
 class PlotOwnership(OrgModel):

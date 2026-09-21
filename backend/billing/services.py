@@ -102,7 +102,7 @@ def get_debt_summary(organization, period=None):
 
     result = []
     for plot in plots:
-        owner = plot.current_owner
+        owners = plot.current_owners
         total_charged = Decimal("0")
         total_paid = Decimal("0")
         for charge in plot.charges.all():
@@ -112,7 +112,9 @@ def get_debt_summary(organization, period=None):
         result.append({
             "plot_id": plot.id,
             "plot_number": plot.number,
-            "owner_name": owner.full_name if owner else "—",
+            # Участок в общей собственности — в отчёте должны стоять все,
+            # иначе счёт уходит одному, а спрашивают со второго.
+            "owner_name": ", ".join(o.full_name for o in owners) or "—",
             "total_charged": total_charged,
             "total_paid": total_paid,
             "debt": debt,

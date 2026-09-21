@@ -196,6 +196,8 @@ class Command(BaseCommand):
                     bool(rows) and "meter_serial" in rows[0],
                     f"строк {len(rows)}")
 
+        self._check_co_ownership(c, CH)
+
         # ---------------- Казначей ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("КАЗНАЧЕЙ"))
         r = get("/api/members/?page_size=1", TR)
@@ -233,6 +235,82 @@ class Command(BaseCommand):
         data = self._json(r) or {}
         self.verify("роль суперадмина проставлена", data.get("role") == "superadmin",
                     f"role={data.get('role')}")
+
+    def _check_co_ownership(self, c, chairman_headers):
+        """
+        Участок в общей собственности.
+
+        Проверяем не то, что две строки лягут в базу — это она позволяла
+        и раньше, — а то, что второго собственника видно: в выдаче
+        участка, в ведомости долгов и в кабинете самого сособственника.
+        Молча потерянный совладелец — это счёт, который уходит одному,
+        а спрашивают со второго.
+        """
+        from accounts.models import User
+        from members.models import Member, Plot
+        from billing.services import get_debt_summary
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        self.stdout.write(self.style.MIGRATE_HEADING("ОБЩАЯ СОБСТВЕННОСТЬ"))
+
+        chairman = User.objects.get(username="chairman_berezka")
+        org = chairman.organization
+        plot = (
+            Plot.objects.filter(organization=org, ownerships__date_to__isnull=True)
+            .distinct().first()
+        )
+        if plot is None:
+            self.verify("есть участок с владельцем для проверки", False)
+            return
+
+        first = plot.current_owner
+        # Предпочитаем члена, у которого есть учётная запись: только так
+        # проверяется главное — что сособственник видит участок у себя.
+        others = Member.objects.filter(organization=org).exclude(pk=first.pk)
+        linked = User.objects.filter(member__in=others).values_list("member_id", flat=True)
+        second = others.filter(pk__in=list(linked)).first() or others.first()
+        if second is None:
+            self.verify("есть второй член для проверки сособственности", False)
+            return
+
+        r = c.patch(
+            f"/api/plots/{plot.pk}/",
+            data=json.dumps({"current_owner_ids": [first.pk, second.pk]}),
+            content_type="application/json", **chairman_headers,
+        )
+        self.verify("второго собственника можно назначить", r.status_code == 200,
+                    f"HTTP {r.status_code}")
+
+        r = c.get(f"/api/plots/{plot.pk}/", **chairman_headers)
+        data = self._json(r) or {}
+        owners = data.get("current_owners") or []
+        self.verify("участок отдаёт обоих собственников", len(owners) == 2,
+                    f"HTTP {r.status_code}, собственников {len(owners)}")
+
+        row = next(
+            (x for x in get_debt_summary(org) if x["plot_id"] == plot.pk), None
+        )
+        self.verify("в ведомости долгов стоят оба имени",
+                    row is not None and row["owner_name"].count(",") == 1)
+
+        user = User.objects.filter(member=second).first()
+        if user is not None:
+            hdr = {"HTTP_AUTHORIZATION": f"Bearer {AccessToken.for_user(user)}"}
+            nums = [x["number"] for x in self._results(c.get("/api/plots/", **hdr))]
+            self.verify("сособственник видит участок в своём кабинете",
+                        plot.number in nums, f"участки: {nums}")
+
+        r = c.patch(
+            f"/api/plots/{plot.pk}/",
+            data=json.dumps({"current_owner_ids": [first.pk]}),
+            content_type="application/json", **chairman_headers,
+        )
+        plot.refresh_from_db()
+        self.verify("снятие сособственника оставляет одного владельца",
+                    len(plot.current_owners) == 1,
+                    f"HTTP {r.status_code}, владельцев {len(plot.current_owners)}")
+        self.verify("история владения закрывается, а не удаляется",
+                    plot.ownerships.filter(date_to__isnull=False).exists())
 
     def _check_payments(self, c, member_headers, chairman_headers):
         """

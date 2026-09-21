@@ -25,7 +25,7 @@
           <q-item-label>Участок №{{ p.number }}</q-item-label>
           <q-item-label caption>
             {{ p.area_sotok ? p.area_sotok + ' сот.' : '—' }} ·
-            {{ p.current_owner?.full_name || 'Без владельца' }}
+            {{ ownerNames(p) }}
           </q-item-label>
         </q-item-section>
         <q-item-section side v-if="p.cadastral_number">
@@ -77,10 +77,14 @@
           />
 
           <!-- Выбор владельца из реестра членов -->
+          <!-- Участок может быть в общей собственности: выбор множественный -->
           <q-select
-            v-model="form.owner"
-            label="Владелец"
+            v-model="form.owners"
+            label="Собственники"
+            hint="Можно выбрать нескольких — участок в общей собственности"
             outlined dense
+            multiple
+            use-chips
             clearable
             use-input
             input-debounce="300"
@@ -90,7 +94,7 @@
             emit-value
             map-options
             @filter="filterMembers"
-            @clear="form.owner = null"
+            @clear="form.owners = []"
           >
             <template #prepend><q-icon name="person" color="green-8" /></template>
             <template #no-option>
@@ -132,8 +136,14 @@
             <q-item>
               <q-item-section side><q-icon name="person" color="blue-8" /></q-item-section>
               <q-item-section>
-                <q-item-label overline>Владелец</q-item-label>
-                <q-item-label>{{ selected.current_owner?.full_name || 'Не назначен' }}</q-item-label>
+                <q-item-label overline>
+                  {{ (selected.current_owners?.length || 0) > 1 ? 'Собственники' : 'Владелец' }}
+                </q-item-label>
+                <q-item-label
+                  v-for="o in selected.current_owners || []"
+                  :key="o.id"
+                >{{ o.full_name }}</q-item-label>
+                <q-item-label v-if="!selected.current_owners?.length">Не назначен</q-item-label>
               </q-item-section>
             </q-item>
             <q-item v-if="selected.cadastral_number">
@@ -201,11 +211,19 @@ const emptyForm = () => ({
   area_sotok: '',
   cadastral_number: '',
   notes: '',
-  owner: null,   // id владельца (или null)
+  owners: [],    // id собственников; их может быть несколько
 })
 const form = ref(emptyForm())
 
 const statusLabel = (s) => ({ active: 'Действующий', inactive: 'Выбывший', heir: 'Наследник' }[s] || s)
+
+// В списке показываем всех собственников: на участке в общей
+// собственности одно имя вводит в заблуждение — спросят со второго.
+function ownerNames(p) {
+  const owners = p.current_owners || []
+  if (owners.length) return owners.map((o) => o.full_name).join(', ')
+  return 'Без владельца'
+}
 
 async function loadMembers() {
   if (membersAll.value.length) return  // уже загружены
@@ -269,7 +287,7 @@ function openEdit(p) {
     area_sotok: p.area_sotok || '',
     cadastral_number: p.cadastral_number || '',
     notes: p.notes || '',
-    owner: p.current_owner?.id ?? null,
+    owners: (p.current_owners || []).map((o) => o.id),
   }
   loadMembers()
   detailDialog.value = false
@@ -299,7 +317,8 @@ async function save() {
       area_sotok: form.value.area_sotok || null,
       cadastral_number: form.value.cadastral_number,
       notes: form.value.notes,
-      current_owner_id: form.value.owner,  // null или id члена
+      // Пустой список снимает собственников с участка
+      current_owner_ids: form.value.owners || [],
     }
     if (editMode.value) {
       await api.patch(`/plots/${form.value.id}/`, payload)
