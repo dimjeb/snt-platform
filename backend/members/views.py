@@ -3,6 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
+from core.audit import AccessLoggedMixin
 from core.permissions import IsTreasurer, IsOrgMember, OrgQuerysetMixin
 from .models import Member, Plot, PlotOwnership
 from .serializers import (
@@ -13,7 +14,10 @@ from .serializers import (
 )
 
 
-class MemberViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
+class MemberViewSet(AccessLoggedMixin, OrgQuerysetMixin, viewsets.ModelViewSet):
+    # Реестр членов — ФИО, телефоны, email. Каждое чтение попадает в журнал
+    # обращений к ПДн: оператор обязан уметь сказать, кто и когда их видел.
+    audit_resource = "реестр членов"
     # Сериализатор отдаёт current_plots, поэтому владения с участками
     # подтягиваем сразу — иначе запрос на каждого члена.
     queryset = Member.objects.prefetch_related("ownerships__plot")
@@ -44,7 +48,9 @@ class MemberViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class PlotViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
+class PlotViewSet(AccessLoggedMixin, OrgQuerysetMixin, viewsets.ModelViewSet):
+    # В выдаче участков есть ФИО собственников — это тоже персональные данные.
+    audit_resource = "участки"
     queryset = Plot.objects.prefetch_related("ownerships__member")
     serializer_class = PlotSerializer
     filter_backends = [SearchFilter, OrderingFilter]

@@ -137,6 +137,7 @@ class Command(BaseCommand):
 
     def _run(self, c, acc):
         CH, TR, ME, AD = acc["chairman"], acc["treasurer"], acc["member"], acc["admin"]
+        self._member_headers = ME
 
         def get(url, hdr):
             return c.get(url, **hdr)
@@ -197,6 +198,8 @@ class Command(BaseCommand):
                     f"строк {len(rows)}")
 
         self._check_co_ownership(c, CH)
+
+        self._check_audit(c, CH)
 
         # ---------------- Казначей ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("КАЗНАЧЕЙ"))
@@ -311,6 +314,51 @@ class Command(BaseCommand):
                     f"HTTP {r.status_code}, владельцев {len(plot.current_owners)}")
         self.verify("история владения закрывается, а не удаляется",
                     plot.ownerships.filter(date_to__isnull=False).exists())
+
+    def _check_audit(self, c, chairman_headers):
+        """
+        Журнал обращений к персональным данным.
+
+        Проверяем две вещи: что обращение вообще регистрируется и что сам
+        журнал не стал второй базой ПДн — в нём не должно оказаться ни
+        ФИО из поискового запроса, ни телефонов.
+        """
+        from core.models import AccessLog
+
+        self.stdout.write(self.style.MIGRATE_HEADING("ЖУРНАЛ ОБРАЩЕНИЙ К ПДн"))
+
+        before = AccessLog.objects.count()
+        r = c.get("/api/members/?page_size=1", **chairman_headers)
+        entry = AccessLog.objects.order_by("-id").first()
+        self.verify("чтение реестра попадает в журнал",
+                    r.status_code == 200 and AccessLog.objects.count() == before + 1)
+        self.verify("в записи есть логин и ресурс",
+                    entry is not None and entry.username
+                    and entry.resource == "реестр членов"
+                    and entry.action == AccessLog.ACTION_LIST,
+                    f"{entry}" if entry else "записи нет")
+
+        # Поиск по фамилии: ФИО уходит в строку запроса и не должно осесть
+        # в журнале открытым текстом.
+        c.get("/api/members/?search=Иванов", **chairman_headers)
+        entry = AccessLog.objects.order_by("-id").first()
+        self.verify("ФИО из поискового запроса в журнал не попадает",
+                    entry is not None and "Иванов" not in entry.path,
+                    entry.path if entry else "записи нет")
+
+        before = AccessLog.objects.count()
+        c.get("/api/members/", **self._member_headers)
+        self.verify("отказ в доступе журнал не засоряет",
+                    AccessLog.objects.count() == before)
+
+        # Фильтр журналирования приложения — отдельно от журнала обращений.
+        from core.logging import scrub
+        self.verify("фильтр логов вычищает телефон",
+                    "9501234567" not in scrub("звонок 8 950 123-45-67"))
+        self.verify("фильтр логов вычищает email",
+                    "@" not in scrub("почта ivan@example.ru"))
+        self.verify("фильтр логов не трогает IP и номера страниц",
+                    scrub("192.168.103.160 page=2") == "192.168.103.160 page=2")
 
     def _check_payments(self, c, member_headers, chairman_headers):
         """

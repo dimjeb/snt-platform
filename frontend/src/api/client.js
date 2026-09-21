@@ -36,7 +36,12 @@ api.interceptors.response.use(
         original.headers.Authorization = `Bearer ${auth.accessToken}`
         return api(original)
       } catch {
+        // Refresh протух или отозван — держать человека на странице,
+        // которая молча не грузится, хуже, чем вернуть на вход.
         auth.logout()
+        if (window.location.pathname !== '/login') {
+          window.location.assign('/login')
+        }
       }
     }
     return Promise.reject(error)

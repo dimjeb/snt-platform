@@ -4,6 +4,8 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from core.audit import record_access
+from core.models import AccessLog
 from core.permissions import IsTreasurer, OrgQuerysetMixin
 from billing.models import BillingPeriod
 from .models import Report
@@ -40,6 +42,7 @@ class DebtReportView(APIView):
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         response["Content-Disposition"] = 'attachment; filename="debt_report.xlsx"'
+        record_access(request, "ведомость долгов", AccessLog.ACTION_EXPORT)
         return response
 
     def post(self, request):
@@ -62,6 +65,12 @@ class DebtReportView(APIView):
             logger.error("Email send failed: %s", e)
             return Response({"detail": f"Ошибка отправки: {e}"}, status=500)
 
+        # Выгрузка ПДн за пределы системы — самое существенное событие из
+        # всех, что стоит регистрировать. Сам адрес в журнал не пишем:
+        # это тоже персональные данные, а для разбора хватает того, кто
+        # и когда отправил.
+        record_access(request, "ведомость долгов", AccessLog.ACTION_EXPORT,
+                      object_id="email")
         return Response({"detail": f"Отчёт отправлен на {email}."})
 
 
@@ -83,6 +92,8 @@ class ReceiptsReportView(APIView):
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         response["Content-Disposition"] = f'attachment; filename="receipts_{period}.xlsx"'
+        record_access(request, "квитанции", AccessLog.ACTION_EXPORT,
+                      object_id=period_id)
         return response
 
 
@@ -96,4 +107,5 @@ class MembersReportView(APIView):
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         response["Content-Disposition"] = 'attachment; filename="members.xlsx"'
+        record_access(request, "реестр членов", AccessLog.ACTION_EXPORT)
         return response

@@ -23,6 +23,7 @@ INSTALLED_APPS = [
     # Third-party
     "rest_framework",
     "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     "django_filters",
     "drf_spectacular",
@@ -91,7 +92,12 @@ AUTH_USER_MODEL = "accounts.User"
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        # Django по умолчанию требует 8 символов. Для системы с ПДн это
+        # мало: восьмизначный пароль подбирается офлайн за разумное время.
+        "OPTIONS": {"min_length": 10},
+    },
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
@@ -118,9 +124,13 @@ REST_FRAMEWORK = {
 from datetime import timedelta
 
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(hours=12),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
+    # Было 12 часов и 30 дней. Украденный токен жил ровно столько же,
+    # а отозвать его было нечем: ROTATE_REFRESH_TOKENS без чёрного списка
+    # выдаёт новый refresh, но старый продолжает работать.
+    "ACCESS_TOKEN_LIFETIME": timedelta(hours=2),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
     "ALGORITHM": "HS256",
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
@@ -188,3 +198,49 @@ PAYMENTS_ENCRYPTION_KEY = config("PAYMENTS_ENCRYPTION_KEY", default="")
 CSRF_TRUSTED_ORIGINS = config(
     "CSRF_TRUSTED_ORIGINS", default="http://localhost"
 ).split(",")
+
+
+# ─── Журналирование ───────────────────────────────────────────────────────────
+
+# Фильтр ПДн навешен на каждый обработчик, а не на отдельные логгеры:
+# запись, прошедшая мимо него, — это утечка, и перечислять логгеры
+# поимённо здесь означало бы однажды забыть новый.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "filters": {
+        "pii": {"()": "core.logging.PIIFilter"},
+    },
+    "formatters": {
+        "standard": {
+            "format": "{asctime} {levelname} {name}: {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "standard",
+            "filters": ["pii"],
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",
+    },
+    "loggers": {
+        "django.request": {
+            "handlers": ["console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        # Запросы к базе с уровнем DEBUG печатают параметры целиком,
+        # включая ФИО и телефоны. В проде это выключено настройкой DEBUG,
+        # но лучше не полагаться на одну переменную окружения.
+        "django.db.backends": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
