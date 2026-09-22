@@ -1,5 +1,11 @@
 <template>
-  <q-page class="change-password-page">
+  <!-- Обычный div, а не q-page. Маршрут /change-password объявлен вне
+       MainLayout (пока пароль временный, меню разделов показывать
+       бессмысленно), а QPage без QLayout над собой молча возвращает
+       пустой рендер — страница выходила белой, и в консоли была лишь
+       строчка «QPage needs to be a deep child of QLayout». LoginPage
+       живёт вне layout по той же причине и тоже обходится div. -->
+  <div class="change-password-page">
     <div class="change-password-card">
       <q-card flat bordered>
         <q-card-section class="bg-green-8 text-white">
@@ -99,7 +105,7 @@
         <q-btn flat dense size="sm" color="grey-7" label="Выйти" @click="logout" />
       </div>
     </div>
-  </q-page>
+  </div>
 </template>
 
 <script setup>
@@ -175,6 +181,9 @@ function logout() {
   align-items: center;
   justify-content: center;
   padding: 16px;
+  /* Высоту давал QPage; без него её надо задать самим, иначе карточка
+     прилипает к верхнему краю. */
+  min-height: 100vh;
 }
 .change-password-card {
   width: 100%;
