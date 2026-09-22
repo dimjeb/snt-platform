@@ -61,10 +61,9 @@ class BillingPeriodViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
         period = self.get_object()
         s = BulkMembershipChargeSerializer(data=request.data)
         s.is_valid(raise_exception=True)
-        count = create_membership_charges(
+        return Response(create_membership_charges(
             period, s.validated_data["amount"], s.validated_data["description"]
-        )
-        return Response({"created": count})
+        ))
 
     @action(detail=True, methods=["post"])
     def create_target_charges(self, request, pk=None):
@@ -84,13 +83,12 @@ class BillingPeriodViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
                 {"detail": "Вид начисления не найден в этом товариществе."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        count = create_target_charges(
+        return Response(create_target_charges(
             period, charge_type,
             s.validated_data["amount"],
             s.validated_data.get("plot_ids"),
             s.validated_data["description"],
-        )
-        return Response({"created": count})
+        ))
 
 
 class ChargeViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):

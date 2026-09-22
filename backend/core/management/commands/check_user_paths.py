@@ -447,6 +447,39 @@ class Command(BaseCommand):
         self.verify("чужое товарищество не затронуто", alien_charges == 0,
                     f"начислений в чужом СНТ: {alien_charges}")
 
+        # Начисление на участок без собственника: создаётся, но в кабинет
+        # попасть не может, и ответ обязан об этом сказать. Иначе
+        # казначей уверен, что начислил, а человек ничего не видит.
+        from members.models import Plot as _Plot
+
+        orphan = _Plot.objects.create(
+            organization=self._fixture_org, number="ПР-БЕЗХОЗ",
+            area_sotok="6.00",
+        )
+        r = post(url, {"charge_type_id": ctype["id"], "amount": "300.00",
+                       "plot_ids": [orphan.pk]}, chairman_headers)
+        data = self._json(r) or {}
+        self.verify(
+            "начисление на участок без собственника помечено",
+            r.status_code == 200 and data.get("created") == 1
+            and data.get("no_owner") == ["ПР-БЕЗХОЗ"],
+            f"HTTP {r.status_code}, ответ {data}",
+        )
+
+        # Членские взносы такой участок пропускают — и тоже сообщают
+        r = post(f"/api/billing/periods/{period_id}/create_membership_charges/",
+                 {"amount": "100.00"}, chairman_headers)
+        data = self._json(r) or {}
+        self.verify(
+            "членские сообщают о пропущенных участках",
+            r.status_code == 200
+            and "ПР-БЕЗХОЗ" in (data.get("skipped_no_owner") or []),
+            f"HTTP {r.status_code}, ответ {data}",
+        )
+        # Начисление ссылается на участок с on_delete=PROTECT — сначала оно
+        Charge.objects.filter(plot=orphan).delete()
+        orphan.delete()
+
         # Суперадмин без СНТ — тот самый отчёт пользователя
         r = post(url, {"charge_type_id": ctype["id"], "amount": "500.00"},
                  admin_headers)
@@ -716,8 +749,12 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("ОБЩАЯ СОБСТВЕННОСТЬ"))
 
         org = self._fixture_org
+        # ownerships__date_to__isnull=True само по себе даёт LEFT JOIN и
+        # притягивает участки вообще без владений — берём по члену.
         plot = (
-            Plot.objects.filter(organization=org, ownerships__date_to__isnull=True)
+            Plot.objects.filter(organization=org,
+                                ownerships__member__isnull=False,
+                                ownerships__date_to__isnull=True)
             .distinct().first()
         )
         if plot is None:

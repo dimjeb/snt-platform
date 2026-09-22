@@ -357,19 +357,42 @@ async function createTarget() {
     targetForm.value = { charge_type_id: null, amount: '', description: '', plot_ids: [] }
     targetScope.value = 'all'
     await onPeriodChange(selectedPeriod.value)
-    $q.notify({ type: 'positive', message: `Начислено участков: ${data.created}` })
+    notifyCharged(data.created, data.no_owner,
+                  'Начисление есть, но в личном кабинете его никто не увидит')
   } catch (e) {
     $q.notify({ type: 'negative', message: errText(e, 'Не удалось начислить') })
   } finally { actionLoading.value = false }
 }
 
+// Участки без текущего собственника — отдельным сообщением, которое не
+// гаснет само. Начисление на такой участок в личный кабинет не попадёт:
+// показывать его некому. Молчать об этом нельзя — казначей уверен, что
+// начислил, а человек ничего не видит и идёт разбираться.
+function notifyCharged(created, noOwner, warning) {
+  const orphans = noOwner || []
+  if (!orphans.length) {
+    $q.notify({ type: 'positive', message: `Начислено участков: ${created}` })
+    return
+  }
+  $q.notify({
+    type: 'warning',
+    timeout: 0,
+    multiLine: true,
+    actions: [{ label: 'Понятно', color: 'white' }],
+    message: `Начислено участков: ${created}. `
+      + `Без собственника: ${orphans.length} (${orphans.join(', ')}). `
+      + warning,
+  })
+}
+
 async function createMembership() {
   actionLoading.value = true
   try {
-    await api.post(`/billing/periods/${selectedPeriod.value}/create_membership_charges/`, membershipForm.value)
+    const { data } = await api.post(`/billing/periods/${selectedPeriod.value}/create_membership_charges/`, membershipForm.value)
     bulkMembershipDialog.value = false
     await onPeriodChange(selectedPeriod.value)
-    $q.notify({ type: 'positive', message: 'Взносы начислены' })
+    notifyCharged(data.created, data.skipped_no_owner,
+                  'Им взнос не начислен — закрепите участок за членом СНТ')
   } catch (e) { $q.notify({ type: 'negative', message: errText(e, 'Ошибка') }) }
   finally { actionLoading.value = false }
 }

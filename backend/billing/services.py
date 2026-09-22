@@ -3,15 +3,21 @@
 """
 from decimal import Decimal
 from django.db import transaction
+from django.db.models import Exists, OuterRef
 from .credits import spend_all_credits
 from .models import BillingPeriod, Charge, ChargeType
 from members.models import Plot
 
 
-def create_membership_charges(period: BillingPeriod, amount: Decimal, description: str = "") -> int:
+def create_membership_charges(period: BillingPeriod, amount: Decimal,
+                              description: str = "") -> dict:
     """
     Массово создаёт начисления членских взносов для всех активных участков периода.
-    Возвращает количество созданных записей.
+
+    Возвращает {"created": сколько создано, "skipped_no_owner": [номера]}.
+    Участки без текущего собственника пропускаются — начислять некому, —
+    но молчать об этом нельзя: казначей уверен, что начислил всем, а
+    часть участков осталась без взноса.
     """
     org = period.organization
     charge_type, _ = ChargeType.objects.get_or_create(
@@ -20,10 +26,26 @@ def create_membership_charges(period: BillingPeriod, amount: Decimal, descriptio
         defaults={"name": "Членский взнос"},
     )
 
-    plots = Plot.objects.filter(
-        organization=org,
-        ownerships__date_to__isnull=True,  # только с текущим владельцем
-    ).distinct()
+    # Именно Exists, а не filter(ownerships__date_to__isnull=True):
+    # обращение к обратной связи через __isnull=True Django переводит в
+    # LEFT OUTER JOIN, и участок, у которого строк владения НЕТ ВООБЩЕ,
+    # попадает в выборку «только с текущим владельцем» — date_to у него
+    # NULL просто потому, что приджойнить нечего. Такому участку
+    # начислялся членский взнос, и начисление не появлялось ни в одном
+    # личном кабинете: показывать его некому.
+    from members.models import PlotOwnership
+
+    has_owner = PlotOwnership.objects.filter(
+        plot=OuterRef("pk"), date_to__isnull=True,
+    )
+    plots = Plot.objects.filter(organization=org).filter(Exists(has_owner))
+
+    skipped = list(
+        Plot.objects.filter(organization=org)
+        .exclude(pk__in=plots.values("pk"))
+        .order_by("number")
+        .values_list("number", flat=True)
+    )
 
     charges = []
     for plot in plots:
@@ -47,24 +69,34 @@ def create_membership_charges(period: BillingPeriod, amount: Decimal, descriptio
         # деньги товарищество уже получило.
         spend_all_credits(org)
 
-    return len(charges)
+    return {"created": len(charges), "skipped_no_owner": skipped}
 
 
 def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
                           amount: Decimal, plot_ids: list | None = None,
-                          description: str = "") -> int:
+                          description: str = "") -> dict:
     """
     Создаёт целевые взносы.
     plot_ids=None — для всех участков организации.
+
+    Возвращает {"created": сколько создано, "no_owner": [номера]}.
+    В отличие от членских, целевой взнос начисляется и на участок без
+    текущего собственника: он может быть решением общего собрания по
+    всем участкам, включая заброшенные. Но такое начисление ни в одном
+    личном кабинете не появится — показывать его некому, — поэтому
+    номера таких участков возвращаются отдельно.
     """
     org = period.organization
 
-    qs = Plot.objects.filter(organization=org)
+    qs = Plot.objects.filter(organization=org).prefetch_related("ownerships")
     if plot_ids:
         qs = qs.filter(pk__in=plot_ids)
 
     charges = []
+    no_owner = []
     for plot in qs:
+        if not any(o.date_to is None for o in plot.ownerships.all()):
+            no_owner.append(plot.number)
         if not Charge.objects.filter(period=period, plot=plot, charge_type=charge_type).exists():
             charges.append(
                 Charge(
@@ -84,7 +116,7 @@ def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
         # деньги товарищество уже получило.
         spend_all_credits(org)
 
-    return len(charges)
+    return {"created": len(charges), "no_owner": sorted(no_owner)}
 
 
 def get_debt_summary(organization, period=None):
