@@ -217,6 +217,14 @@
             <div class="text-h6 text-weight-bold q-mt-sm">
               {{ formatMoney(qrAmount) }} ₽
             </div>
+            <!-- Это обычный перевод, а не эквайринг: тариф за перевод
+                 юридическому лицу банк берёт свой, и товарищество на него
+                 не влияет. Человек, увидевший комиссию впервые в момент
+                 оплаты, идёт звонить казначею. -->
+            <div class="text-caption text-grey-7 q-mt-xs">
+              Банк может удержать свою комиссию за перевод — она не
+              относится к товариществу
+            </div>
           </q-card-section>
 
           <q-card-section v-if="qrError" class="text-negative text-body2">
