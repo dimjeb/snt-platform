@@ -4,7 +4,9 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from core.permissions import IsTreasurer, OrgQuerysetMixin
+from core.audit import record_access
+from core.models import AccessLog
+from core.permissions import IsTreasurer, OrgQuerysetMixin, require_org
 from billing.models import BillingPeriod
 from .models import Report
 from .generators import (
@@ -34,12 +36,13 @@ class DebtReportView(APIView):
 
     def get(self, request):
         """Скачать ведомость задолженностей (Excel)."""
-        content = generate_debt_excel(request.org)
+        content = generate_debt_excel(require_org(request))
         response = HttpResponse(
             content,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         response["Content-Disposition"] = 'attachment; filename="debt_report.xlsx"'
+        record_access(request, "ведомость долгов", AccessLog.ACTION_EXPORT)
         return response
 
     def post(self, request):
@@ -48,9 +51,10 @@ class DebtReportView(APIView):
         if not email:
             return Response({"detail": "email обязателен."}, status=400)
 
-        content = generate_debt_excel(request.org)
+        org = require_org(request)
+        content = generate_debt_excel(org)
         msg = EmailMessage(
-            subject=f"Ведомость задолженностей — {request.org.name}",
+            subject=f"Ведомость задолженностей — {org.name}",
             body="Во вложении ведомость задолженностей.",
             to=[email],
         )
@@ -62,6 +66,12 @@ class DebtReportView(APIView):
             logger.error("Email send failed: %s", e)
             return Response({"detail": f"Ошибка отправки: {e}"}, status=500)
 
+        # Выгрузка ПДн за пределы системы — самое существенное событие из
+        # всех, что стоит регистрировать. Сам адрес в журнал не пишем:
+        # это тоже персональные данные, а для разбора хватает того, кто
+        # и когда отправил.
+        record_access(request, "ведомость долгов", AccessLog.ACTION_EXPORT,
+                      object_id="email")
         return Response({"detail": f"Отчёт отправлен на {email}."})
 
 
@@ -72,17 +82,20 @@ class ReceiptsReportView(APIView):
         period_id = request.query_params.get("period_id")
         if not period_id:
             return Response({"detail": "period_id обязателен."}, status=400)
+        org = require_org(request)
         try:
-            period = BillingPeriod.objects.get(pk=period_id, organization=request.org)
+            period = BillingPeriod.objects.get(pk=period_id, organization=org)
         except BillingPeriod.DoesNotExist:
             return Response({"detail": "Период не найден."}, status=404)
 
-        content = generate_receipts_excel(request.org, period)
+        content = generate_receipts_excel(org, period)
         response = HttpResponse(
             content,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         response["Content-Disposition"] = f'attachment; filename="receipts_{period}.xlsx"'
+        record_access(request, "квитанции", AccessLog.ACTION_EXPORT,
+                      object_id=period_id)
         return response
 
 
@@ -90,10 +103,11 @@ class MembersReportView(APIView):
     permission_classes = [IsTreasurer]
 
     def get(self, request):
-        content = generate_members_excel(request.org)
+        content = generate_members_excel(require_org(request))
         response = HttpResponse(
             content,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         response["Content-Disposition"] = 'attachment; filename="members.xlsx"'
+        record_access(request, "реестр членов", AccessLog.ACTION_EXPORT)
         return response

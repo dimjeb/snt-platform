@@ -9,6 +9,21 @@ const routes = [
     meta: { public: true },
   },
   {
+    // Публичная: инструкцию должно быть можно прочитать до входа, в том
+    // числе человеку, который не понимает, что ему делать с выданным
+    // логином.
+    path: '/help',
+    component: () => import('pages/HelpPage.vue'),
+    meta: { public: true },
+  },
+  {
+    // Вне MainLayout: пока пароль временный, показывать меню разделов
+    // бессмысленно — API на них всё равно отвечает 403.
+    path: '/change-password',
+    component: () => import('pages/ChangePasswordPage.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
     path: '/',
     component: () => import('layouts/MainLayout.vue'),
     meta: { requiresAuth: true },
@@ -38,6 +53,11 @@ const routes = [
       {
         path: 'meter-reading',
         component: () => import('pages/MeterReadingPage.vue'),
+      },
+      {
+        path: 'statements',
+        component: () => import('pages/StatementPage.vue'),
+        meta: { roles: ['chairman', 'treasurer', 'superadmin'] },
       },
       {
         path: 'reports',
@@ -73,11 +93,36 @@ export default defineRouter(function ({ store }) {
       return '/login'
     }
 
+    // Временный пароль: до смены не пускаем никуда, кроме самой смены.
+    // Сервер это тоже проверяет (PasswordChangeRequiredMiddleware), здесь
+    // лишь чтобы человек видел форму, а не череду ошибок доступа.
+    if (auth.user?.must_change_password) {
+      return to.path === '/change-password' ? true : '/change-password'
+    }
+    if (to.path === '/change-password') return true
+
     if (to.meta.roles && !to.meta.roles.includes(auth.user?.role)) {
       return '/dashboard'
     }
 
     return true
+  })
+
+  // Страницы грузятся по требованию, отдельными файлами с хешем в имени.
+  // Если вкладка открыта со старого index.html, а на сервере уже новая
+  // сборка, такого файла на диске нет — импорт падает, и пользователь
+  // видит белый экран. Единственное верное лечение — перезагрузить
+  // документ целиком: тогда придёт свежий index.html с новыми именами.
+  router.onError((error, to) => {
+    const message = String(error?.message || '')
+    const chunkGone = (
+      message.includes('Failed to fetch dynamically imported module')
+      || message.includes('Importing a module script failed')
+      || message.includes('error loading dynamically imported module')
+    )
+    if (chunkGone && to?.fullPath) {
+      window.location.assign(to.fullPath)
+    }
   })
 
   return router

@@ -18,6 +18,10 @@ export const useAuthStore = defineStore('auth', {
     isChairman: (s) => s.user?.role === 'chairman' || s.user?.role === 'superadmin',
     isTreasurer: (s) => ['chairman', 'treasurer', 'superadmin'].includes(s.user?.role),
     isMember: (s) => s.user?.role === 'member',
+    // Председатель и казначей обычно тоже владеют участком, и свои
+    // начисления им нужно видеть так же, как всем. Личный кабинет
+    // положен не по роли, а по связи учётки с членом СНТ.
+    hasOwnCabinet: (s) => !!s.user?.member_id,
     isSuperAdmin: (s) => s.user?.role === 'superadmin',
     // Есть ли активный контекст организации
     hasOrg: (s) => !!(s.user?.organization || s.selectedOrgId),
@@ -39,6 +43,13 @@ export const useAuthStore = defineStore('auth', {
       })
       this.accessToken = data.access
       localStorage.setItem('access', data.access)
+      // Сервер ротирует refresh и гасит старый в чёрном списке. Если не
+      // сохранить новый, следующее обновление пойдёт со сгоревшим токеном
+      // и выкинет человека из системы посреди работы.
+      if (data.refresh) {
+        this.refreshToken = data.refresh
+        localStorage.setItem('refresh', data.refresh)
+      }
     },
 
     async fetchMe() {

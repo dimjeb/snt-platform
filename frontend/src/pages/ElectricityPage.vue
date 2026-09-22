@@ -159,8 +159,31 @@ async function calculate() {
     // Запускаем расчёт через action счётчика
     const mainMeter = meters.value.find((m) => m.is_main)
     if (!mainMeter) { $q.notify({ type: 'warning', message: 'Не найден главный счётчик' }); return }
-    await api.post(`/electricity/meters/${mainMeter.id}/calculate/`, { period_id: pid, period_date: `${year}-${month}-01` })
-    $q.notify({ type: 'positive', message: 'Расчёт выполнен, начисления обновлены' })
+    // Последний день месяца, а не первый: от этой даты зависит выбор
+    // тарифа, и тариф, вступивший в силу в середине месяца, с первым
+    // числом просто не нашёлся бы.
+    const lastDay = new Date(Number(year), Number(month), 0).getDate()
+    // action объявлен detail=False, поэтому маршрут без id счётчика
+    const { data } = await api.post('/electricity/meters/calculate/', {
+      billing_period_id: pid,
+      period_date: `${year}-${month}-${String(lastDay).padStart(2, '0')}`,
+    })
+    // Сколько участков посчитано по среднему — это надо видеть: за них
+    // начислено по оценке, и с ними придётся разбираться отдельно.
+    const estimated = (data.details || []).filter((d) => d.missing_reading)
+    if (estimated.length) {
+      const plotList = estimated.map((d) => d.plot_number).join(', ')
+      $q.notify({
+        type: 'warning',
+        timeout: 0,
+        multiLine: true,
+        actions: [{ label: 'Понятно', color: 'white' }],
+        message: `Расчёт выполнен. Без показаний за период: ${estimated.length} `
+          + `— начислено по среднему. Участки: ${plotList}`,
+      })
+    } else {
+      $q.notify({ type: 'positive', message: 'Расчёт выполнен, начисления обновлены' })
+    }
   } catch (e) {
     $q.notify({ type: 'negative', message: e.response?.data?.detail || 'Ошибка расчёта' })
   } finally {

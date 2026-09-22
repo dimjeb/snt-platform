@@ -26,9 +26,18 @@
           </q-item-label>
         </q-item-section>
         <q-item-section side>
-          <q-badge :color="statusColor(m.status)">
-            {{ statusLabel(m.status) }}
-          </q-badge>
+          <div class="row items-center no-wrap q-gutter-xs">
+            <!-- Видно сразу по списку, кому доступ уже выдали, а кому нет:
+                 при полутора сотнях человек это иначе ведётся на бумажке. -->
+            <q-icon
+              :name="accessIcon(m).name" :color="accessIcon(m).color" size="18px"
+            >
+              <q-tooltip>{{ accessIcon(m).hint }}</q-tooltip>
+            </q-icon>
+            <q-badge :color="statusColor(m.status)">
+              {{ statusLabel(m.status) }}
+            </q-badge>
+          </div>
         </q-item-section>
       </q-item>
 
@@ -76,6 +85,46 @@
     </q-dialog>
 
     <!-- Детали члена -->
+    <!-- Пароль показывается ровно один раз: в базе лежит только его хеш,
+         повторно показать его нельзя даже председателю. -->
+    <q-dialog v-model="passwordDialog" persistent>
+      <q-card style="min-width: 320px; max-width: 420px" v-if="issued">
+        <q-card-section class="bg-green-8 text-white">
+          <div class="text-h6">Доступ выдан</div>
+          <div class="text-caption">{{ issued.full_name }}</div>
+        </q-card-section>
+
+        <q-card-section class="q-gutter-md">
+          <div>
+            <div class="text-caption text-grey-7">Логин</div>
+            <div class="text-h6 text-weight-bold">{{ issued.username }}</div>
+          </div>
+          <div>
+            <div class="text-caption text-grey-7">Временный пароль</div>
+            <div class="text-h5 text-weight-bold access-password">
+              {{ issued.password }}
+            </div>
+          </div>
+
+          <q-banner dense class="bg-orange-1 text-orange-10">
+            <template #avatar><q-icon name="warning" color="orange-9" /></template>
+            Запишите или скопируйте сейчас. Повторно пароль показать нельзя —
+            в базе хранится только его зашифрованный отпечаток. Потеряется —
+            останется сбросить.
+          </q-banner>
+
+          <div class="text-caption text-grey-7">
+            При первом входе система потребует сменить этот пароль на свой.
+          </div>
+        </q-card-section>
+
+        <q-card-actions align="right">
+          <q-btn flat icon="content_copy" label="Скопировать" @click="copyIssued" />
+          <q-btn color="green-8" unelevated label="Готово" v-close-popup />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
     <q-dialog v-model="detailDialog">
       <q-card style="min-width: 340px; max-width: 480px" v-if="selected">
         <q-card-section class="bg-green-8 text-white">
@@ -106,8 +155,38 @@
               <q-item-section side><q-icon name="notes" color="grey-6" /></q-item-section>
               <q-item-section class="text-grey-7">{{ selected.notes }}</q-item-section>
             </q-item>
+            <q-item>
+              <q-item-section side>
+                <q-icon :name="accessIcon(selected).name"
+                        :color="accessIcon(selected).color" />
+              </q-item-section>
+              <q-item-section>
+                <q-item-label>{{ accessIcon(selected).hint }}</q-item-label>
+                <q-item-label caption v-if="selected.account">
+                  Логин: {{ selected.account.username }}
+                </q-item-label>
+              </q-item-section>
+            </q-item>
           </q-list>
         </q-card-section>
+
+        <!-- Выдача доступа — дело председателя: это заведение учётной
+             записи с паролем, а не работа с деньгами. -->
+        <q-card-section v-if="auth.isChairman" class="q-pt-none">
+          <q-btn
+            v-if="!selected.account"
+            outline color="green-8" icon="key" class="full-width"
+            label="Выдать доступ" :loading="accessLoading"
+            @click="grantAccess(selected)"
+          />
+          <q-btn
+            v-else
+            outline color="orange-8" icon="lock_reset" class="full-width"
+            label="Сбросить пароль" :loading="accessLoading"
+            @click="confirmReset(selected)"
+          />
+        </q-card-section>
+
         <q-card-actions align="right">
           <q-btn flat label="Закрыть" v-close-popup />
           <q-btn flat color="negative" icon="delete" @click="confirmDelete(selected)" />
@@ -136,8 +215,10 @@
 import { ref, watch, onMounted } from 'vue'
 import { useQuasar } from 'quasar'
 import api from 'src/api/client'
+import { useAuthStore } from 'stores/auth'
 
 const $q = useQuasar()
+const auth = useAuthStore()
 const members = ref([])
 const loading = ref(false)
 const saving = ref(false)
@@ -150,6 +231,9 @@ const detailDialog = ref(false)
 const deleteDialog = ref(false)
 const editMode = ref(false)
 const selected = ref(null)
+const accessLoading = ref(false)
+const passwordDialog = ref(false)
+const issued = ref(null)
 
 const emptyForm = () => ({
   last_name: '',
@@ -173,6 +257,85 @@ function statusLabel(s) {
 }
 function statusColor(s) {
   return s === 'active' ? 'positive' : s === 'heir' ? 'orange-7' : 'grey'
+}
+
+// Три состояния доступа, различимые одним взглядом по списку:
+// нет учётки / выдана, но человек ещё не входил / он уже пользуется.
+function accessIcon(m) {
+  if (!m?.account) {
+    return { name: 'no_accounts', color: 'grey-5', hint: 'Доступ не выдан' }
+  }
+  if (m.account.must_change_password) {
+    return {
+      name: 'key', color: 'orange-8',
+      hint: 'Пароль выдан, человек ещё не входил',
+    }
+  }
+  return { name: 'verified_user', color: 'green-7', hint: 'Пользуется кабинетом' }
+}
+
+function showIssued(data) {
+  issued.value = data
+  passwordDialog.value = true
+}
+
+async function copyIssued() {
+  const text = `Сайт: ${window.location.origin}\n`
+    + `Логин: ${issued.value.username}\n`
+    + `Пароль: ${issued.value.password}`
+  try {
+    await navigator.clipboard.writeText(text)
+    $q.notify({ type: 'positive', message: 'Скопировано' })
+  } catch {
+    // В браузере без разрешения на буфер обмена копирование недоступно,
+    // и молчать об этом нельзя: человек решит, что скопировалось.
+    $q.notify({
+      type: 'warning', timeout: 0, multiLine: true,
+      actions: [{ label: 'Понятно', color: 'white' }],
+      message: 'Браузер не дал доступ к буферу обмена — перепишите пароль вручную.',
+    })
+  }
+}
+
+async function grantAccess(m) {
+  accessLoading.value = true
+  try {
+    const { data } = await api.post(`/members/${m.id}/grant-access/`)
+    detailDialog.value = false
+    showIssued(data)
+    await load()
+  } catch (e) {
+    $q.notify({
+      type: 'negative',
+      message: e.response?.data?.detail || 'Не удалось выдать доступ',
+    })
+  } finally { accessLoading.value = false }
+}
+
+function confirmReset(m) {
+  $q.dialog({
+    title: 'Сбросить пароль?',
+    message: `Старый пароль ${m.full_name} перестанет работать сразу. `
+      + 'Новый нужно будет передать лично.',
+    cancel: 'Отмена',
+    ok: { label: 'Сбросить', color: 'orange-8', unelevated: true },
+    persistent: true,
+  }).onOk(() => resetPassword(m))
+}
+
+async function resetPassword(m) {
+  accessLoading.value = true
+  try {
+    const { data } = await api.post(`/members/${m.id}/reset-password/`)
+    detailDialog.value = false
+    showIssued(data)
+    await load()
+  } catch (e) {
+    $q.notify({
+      type: 'negative',
+      message: e.response?.data?.detail || 'Не удалось сбросить пароль',
+    })
+  } finally { accessLoading.value = false }
 }
 
 async function load() {
@@ -233,6 +396,10 @@ async function save() {
   try {
     const payload = { ...form.value }
     delete payload.id
+    // DateField в DRF не принимает пустую строку — только null или дату.
+    // Добавление члена без даты вступления (обычный случай) падало с 400,
+    // а диалог оставался открытым: он закрывается только при успехе.
+    if (!payload.joined_at) payload.joined_at = null
     if (editMode.value) {
       await api.patch(`/members/${form.value.id}/`, payload)
     } else {
@@ -266,3 +433,11 @@ async function deleteMember() {
 watch(search, () => { page.value = 1; load() }, { debounce: 400 })
 onMounted(load)
 </script>
+
+<style scoped>
+.access-password {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  letter-spacing: 1px;
+  user-select: all;
+}
+</style>

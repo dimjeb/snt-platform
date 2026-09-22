@@ -78,6 +78,16 @@ class MeterReading(OrgModel):
         "Фото показания", upload_to="meter_photos/", null=True, blank=True
     )
     notes = models.CharField("Примечание", max_length=200, blank=True)
+    is_estimated = models.BooleanField(
+        "Расчётное",
+        default=False,
+        help_text=(
+            "Показание не снято, а рассчитано по среднему: человек не "
+            "сдал его за период. Нужно, чтобы следующий расчёт "
+            "отталкивался от уже начисленного, и когда настоящее "
+            "показание наконец придёт, разница не легла в счёт второй раз."
+        ),
+    )
 
     class Meta:
         verbose_name = "Показание счётчика"

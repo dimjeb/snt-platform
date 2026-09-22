@@ -1,7 +1,9 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from core.permissions import IsTreasurer, IsOrgMember, OrgQuerysetMixin
+from core.permissions import (
+    IsTreasurer, IsOrgMember, OrgQuerysetMixin, require_org,
+)
 from billing.models import BillingPeriod
 from .models import EnergyTariff, Meter, MeterReading
 from .serializers import (
@@ -18,7 +20,7 @@ class EnergyTariffViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     permission_classes = [IsTreasurer]
 
     def perform_create(self, serializer):
-        serializer.save(organization=self.request.org)
+        serializer.save(organization=require_org(self.request))
 
 
 class MeterViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
@@ -32,7 +34,7 @@ class MeterViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
         return [IsTreasurer()]
 
     def perform_create(self, serializer):
-        serializer.save(organization=self.request.org)
+        serializer.save(organization=require_org(self.request))
 
     @action(detail=False, methods=["post"], permission_classes=[IsTreasurer])
     def calculate(self, request):
@@ -41,20 +43,27 @@ class MeterViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
         """
         s = CalculateElectricitySerializer(data=request.data)
         s.is_valid(raise_exception=True)
+        org = require_org(request)
 
         try:
             billing_period = BillingPeriod.objects.get(
                 pk=s.validated_data["billing_period_id"],
-                organization=request.org,
+                organization=org,
             )
         except BillingPeriod.DoesNotExist:
             return Response({"detail": "Расчётный период не найден."}, status=404)
 
-        results = calculate_electricity(
-            request.org,
-            s.validated_data["period_date"],
-            billing_period,
-        )
+        try:
+            results = calculate_electricity(
+                org,
+                s.validated_data["period_date"],
+                billing_period,
+            )
+        except ValueError as exc:
+            # Нет тарифа, период без месяца и т.п. — это сообщение
+            # казначею, а не пятисотка с трейсбеком.
+            return Response({"detail": str(exc)},
+                            status=status.HTTP_400_BAD_REQUEST)
         return Response({
             "calculated": len(results),
             "details": [dataclasses.asdict(r) for r in results],
@@ -75,6 +84,6 @@ class MeterReadingViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(
-            organization=self.request.org,
+            organization=require_org(self.request),
             submitted_by=self.request.user,
         )

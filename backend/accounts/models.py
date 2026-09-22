@@ -36,6 +36,13 @@ class User(AbstractUser):
         default=ROLE_MEMBER,
     )
     phone = models.CharField("Телефон", max_length=20, blank=True)
+    must_change_password = models.BooleanField(
+        "Требуется сменить пароль", default=False,
+        help_text=(
+            "Учётная запись заведена с временным паролем. Пока флаг стоит, "
+            "API отдаёт 403 на всё, кроме профиля и смены пароля."
+        ),
+    )
     # Связь с конкретным членом СНТ (может отсутствовать у председателя/казначея)
     member = models.OneToOneField(
         "members.Member",
