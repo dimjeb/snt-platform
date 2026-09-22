@@ -387,6 +387,7 @@ class Command(BaseCommand):
 
         # ---------------- Выдача учёток ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("ВЫДАЧА УЧЁТОК"))
+        self._check_grant_access(c, CH, TR)
         self._check_account_issuance()
 
         # ---------------- Электроэнергия ----------------
@@ -805,6 +806,92 @@ class Command(BaseCommand):
             f"доли потерь: {[str(r.loss_share) for r in res.values()]}",
         )
 
+
+    def _check_grant_access(self, c, chairman_headers, treasurer_headers):
+        """
+        Выдача доступа кнопкой: пароль показывается один раз и только
+        председателю. Казначею нельзя: он ведёт деньги, а не людей.
+        """
+        import json as _json
+
+        from accounts.models import User
+        from members.models import Member
+
+        org = self._fixture_org
+        member = Member.objects.create(
+            organization=org, last_name="Доступов", first_name="Тест",
+        )
+
+        def post(url, hdr):
+            return c.post(url, data=_json.dumps({}),
+                          content_type="application/json", **hdr)
+
+        url = f"/api/members/{member.pk}/grant-access/"
+
+        r = post(url, treasurer_headers)
+        self.verify("казначей выдать доступ не может", r.status_code == 403,
+                    f"HTTP {r.status_code}")
+
+        r = post(url, chairman_headers)
+        data = self._json(r) or {}
+        self.verify(
+            "председатель выдаёт доступ и получает пароль",
+            r.status_code == 201 and data.get("username")
+            and len(data.get("password") or "") >= 12,
+            f"HTTP {r.status_code}, логин {data.get('username')}",
+        )
+
+        user = User.objects.filter(member=member).first()
+        self.verify(
+            "у новой учётки роль члена и требование сменить пароль",
+            user is not None and user.role == User.ROLE_MEMBER
+            and user.must_change_password
+            and user.organization_id == org.pk,
+        )
+        self.verify(
+            "выданным паролем действительно можно войти",
+            user is not None and user.check_password(data.get("password", "")),
+        )
+
+        r = post(url, chairman_headers)
+        self.verify("повторная выдача отклоняется", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+
+        # Сброс пароля
+        old_hash = user.password
+        r = post(f"/api/members/{member.pk}/reset-password/", chairman_headers)
+        fresh = self._json(r) or {}
+        user.refresh_from_db()
+        self.verify(
+            "сброс пароля выдаёт новый и снова требует смены",
+            r.status_code == 200 and user.password != old_hash
+            and user.check_password(fresh.get("password", ""))
+            and user.must_change_password,
+            f"HTTP {r.status_code}",
+        )
+
+        # Состояние доступа видно в списке членов
+        r = c.get(f"/api/members/{member.pk}/", **chairman_headers)
+        row = self._json(r) or {}
+        self.verify(
+            "в карточке члена видно, что доступ выдан",
+            (row.get("account") or {}).get("username") == user.username,
+            f"account={row.get('account')}",
+        )
+
+        other = Member.objects.create(
+            organization=org, last_name="Бездоступов", first_name="Тест",
+        )
+        r = c.get(f"/api/members/{other.pk}/", **chairman_headers)
+        self.verify("у члена без учётки доступ пуст",
+                    (self._json(r) or {}).get("account") is None)
+
+        r = post(f"/api/members/{other.pk}/reset-password/", chairman_headers)
+        self.verify("сброс без учётки отклоняется с пояснением",
+                    r.status_code == 400, f"HTTP {r.status_code}")
+
+        User.objects.filter(member__in=[member, other]).delete()
+        Member.objects.filter(pk__in=[member.pk, other.pk]).delete()
 
     def _check_account_issuance(self):
         """

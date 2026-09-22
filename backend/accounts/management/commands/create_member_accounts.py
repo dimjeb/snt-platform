@@ -19,41 +19,13 @@
 """
 import csv
 import os
-import secrets
 
-from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-# Без похожих друг на друга символов: пароль будут диктовать по телефону
-# и переписывать с бумажки, а 0/O и 1/l/I в этом деле — источник звонков
-# «у меня не входит».
-ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789"
-
-RU_LAT = {
-    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
-    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
-    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
-    "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch",
-    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
-}
-
-
-def translit(value: str) -> str:
-    out = []
-    for ch in (value or "").lower():
-        if ch in RU_LAT:
-            out.append(RU_LAT[ch])
-        elif ch.isascii() and ch.isalnum():
-            out.append(ch)
-    return "".join(out)
-
-
-def make_password() -> str:
-    """Три группы по четыре символа: xxxx-xxxx-xxxx."""
-    raw = "".join(secrets.choice(ALPHABET) for _ in range(12))
-    return f"{raw[0:4]}-{raw[4:8]}-{raw[8:12]}"
+from accounts.provisioning import (
+    ProvisioningError, checked_password, make_username,
+)
 
 
 class Command(BaseCommand):
@@ -135,26 +107,14 @@ class Command(BaseCommand):
                 skipped += 1
                 continue
 
-            base = translit(member.last_name) or translit(member.first_name) or "member"
-            username = f"{base}-{member.pk}"
-            # Подстраховка на случай, если такой логин уже занят вручную
-            # заведённой учёткой: генерируем следующий свободный.
-            suffix = 0
-            while username in taken:
-                suffix += 1
-                username = f"{base}-{member.pk}-{suffix}"
+            # Логин и пароль делает тот же модуль, что и кнопка «Выдать
+            # доступ» в интерфейсе: одна реализация, одинаковый результат.
+            username = make_username(member, taken=taken)
             taken.add(username)
-
-            password = make_password()
             try:
-                # Пароль обязан проходить ту же политику, что и любой другой:
-                # временный не значит слабый.
-                validate_password(password)
-            except ValidationError as exc:
-                raise CommandError(
-                    "Сгенерированный пароль не прошёл политику паролей: "
-                    + "; ".join(exc.messages)
-                )
+                password = checked_password()
+            except ProvisioningError as exc:
+                raise CommandError(str(exc))
 
             plots = ", ".join(p.number for p in member.plots) or "—"
 

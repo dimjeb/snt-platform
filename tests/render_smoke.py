@@ -192,6 +192,34 @@ with sync_playwright() as pw:
     verify("нет жалоб Quasar на layout", not layout_errors,
            "; ".join(layout_errors[:2]))
 
+    # 6. Председатель выдаёт доступ кнопкой и видит пароль один раз.
+    page.goto(f"{BASE}/login", wait_until="networkidle")
+    fields = page.locator("input")
+    fields.nth(0).fill(LOGIN + "-chair")
+    fields.nth(1).fill(PASSWORD)
+    page.get_by_role("button", name="Войти").click()
+    page.wait_for_url("**/dashboard", timeout=15000)
+
+    page.goto(f"{BASE}/members", wait_until="networkidle")
+    page.wait_for_timeout(1500)
+    page.get_by_text("Бездоступов").first.click()
+    page.wait_for_timeout(800)
+    card = body_text(page)
+    verify("в карточке видно, что доступ не выдан", "Доступ не выдан" in card,
+           card[:150])
+
+    page.get_by_role("button", name="Выдать доступ").click()
+    page.wait_for_timeout(2500)
+    issued = body_text(page)
+    verify("окно с паролем открылось", "Доступ выдан" in issued, issued[:150])
+    verify("логин показан", "bezdostupov" in issued.lower(), "")
+    # Пароль вида xxxx-xxxx-xxxx из алфавита без похожих символов
+    import re as _re
+    verify("временный пароль показан",
+           bool(_re.search(r"[a-z2-9]{4}-[a-z2-9]{4}-[a-z2-9]{4}", issued)), "")
+    verify("сказано, что второй раз пароль не покажут",
+           "Повторно пароль показать нельзя" in issued, "")
+
     browser.close()
 
 print()

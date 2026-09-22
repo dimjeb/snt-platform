@@ -127,6 +127,13 @@ u = User(username=os.environ["SMOKE_LOGIN"], organization=org, member=m,
          role=User.ROLE_MEMBER, is_active=True, must_change_password=True)
 u.set_password(os.environ["SMOKE_PASSWORD"])
 u.save()
+
+# Председатель — под ним проверяется выдача доступа из интерфейса.
+Member.objects.create(organization=org, last_name="Бездоступов", first_name="Тест")
+boss = User(username=os.environ["SMOKE_LOGIN"] + "-chair", organization=org,
+            role=User.ROLE_CHAIRMAN, is_active=True, must_change_password=False)
+boss.set_password(os.environ["SMOKE_PASSWORD"])
+boss.save()
 PY
 
 echo "→ Django на порту $APIPORT"

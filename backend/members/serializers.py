@@ -6,11 +6,25 @@ from .models import Member, Plot, PlotOwnership
 class MemberSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(read_only=True)
     current_plots = serializers.SerializerMethodField()
+    # Состояние доступа прямо в списке: при полутора сотнях человек
+    # «кому уже выдали» иначе ведётся на бумажке и теряется.
+    account = serializers.SerializerMethodField()
 
     class Meta:
         model = Member
         exclude = ("organization",)
         read_only_fields = ("created_at", "updated_at")
+
+    def get_account(self, obj):
+        user = getattr(obj, "user_account", None)
+        if user is None:
+            return None
+        return {
+            "username": user.username,
+            "is_active": user.is_active,
+            # true — пароль выдан, но человек ещё ни разу не входил
+            "must_change_password": user.must_change_password,
+        }
 
     def get_current_plots(self, obj):
         return [
