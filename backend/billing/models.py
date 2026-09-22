@@ -287,11 +287,33 @@ class PlotCredit(OrgModel):
     построчно, с датами и ссылками на начисления.
     """
 
+    SOURCE_STATEMENT = "statement"
+    SOURCE_ELECTRICITY = "electricity"
+    SOURCE_MANUAL = "manual"
+
+    SOURCE_CHOICES = [
+        (SOURCE_STATEMENT, "Переплата по выписке"),
+        (SOURCE_ELECTRICITY, "Возврат за свет"),
+        (SOURCE_MANUAL, "Вручную"),
+    ]
+
     plot = models.ForeignKey(
         "members.Plot", on_delete=models.CASCADE, related_name="credits",
         verbose_name="Участок",
     )
     date = models.DateField("Дата")
+    source = models.CharField(
+        "Источник", max_length=20, choices=SOURCE_CHOICES,
+        default=SOURCE_STATEMENT,
+        help_text=(
+            "Нужен, чтобы повторный расчёт не выписал второй такой же "
+            "возврат и при этом не затёр переплату по выписке за ту же дату."
+        ),
+    )
+    period = models.ForeignKey(
+        BillingPeriod, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="credits", verbose_name="Расчётный период",
+    )
     amount = models.DecimalField(
         "Сумма", max_digits=12, decimal_places=2,
         help_text="Положительная — аванс зачислен, отрицательная — израсходован.",

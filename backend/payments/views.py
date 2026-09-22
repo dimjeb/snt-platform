@@ -107,6 +107,10 @@ def _member_meters(request):
             "serial_number": meter.serial_number,
             "last_reading_date": last.date if last else None,
             "last_reading_value": last.value if last else None,
+            # Показание могло быть не снято, а рассчитано по среднему.
+            # Показывать такое как своё — значит уверять человека, что
+            # он его сдавал, и оставлять без объяснения, откуда сумма.
+            "last_reading_estimated": bool(last and last.is_estimated),
         })
     return result
 

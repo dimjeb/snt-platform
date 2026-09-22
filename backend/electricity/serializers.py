@@ -36,7 +36,10 @@ class MeterReadingSerializer(serializers.ModelSerializer):
     class Meta:
         model = MeterReading
         exclude = ("organization",)
-        read_only_fields = ("created_at", "updated_at", "submitted_by")
+        # is_estimated ставит только расчёт. Иначе показание, введённое
+        # руками, можно было бы объявить расчётным — и наоборот.
+        read_only_fields = ("created_at", "updated_at", "submitted_by",
+                            "is_estimated")
 
 
 class CalculateElectricitySerializer(serializers.Serializer):

@@ -14,6 +14,9 @@
 # Поднимает временный сервер на порту 55432, гоняет проверки и всё за
 # собой убирает. Боевую базу не трогает.
 #
+#   scripts/check_postgres.sh                  — прогнать check_user_paths
+#   scripts/check_postgres.sh shell < script.py — произвольный скрипт
+#
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -69,5 +72,14 @@ export DEBUG=0
 cd backend
 echo "→ Миграции"
 python3 manage.py migrate --noinput >/dev/null
-echo "→ Проверки"
-python3 manage.py check_user_paths
+
+# Без аргументов гоняем проверки. С аргументами — произвольную команду
+# manage.py на том же настоящем PostgreSQL: это нужно, чтобы
+# воспроизводить ошибки, которых на SQLite не видно.
+if [[ $# -gt 0 ]]; then
+  echo "→ $*"
+  python3 manage.py "$@"
+else
+  echo "→ Проверки"
+  python3 manage.py check_user_paths
+fi

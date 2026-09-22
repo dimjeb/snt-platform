@@ -41,15 +41,45 @@ def credit_balances(organization) -> dict:
 
 
 def add_credit(plot, *, amount, date, organization=None, transaction_row=None,
-               notes=""):
+               notes="", source=PlotCredit.SOURCE_STATEMENT, period=None):
     """Зачислить аванс."""
     amount = Decimal(amount)
     if amount <= 0:
         return None
     return PlotCredit.objects.create(
         organization=organization or plot.organization,
-        plot=plot, date=date, amount=amount,
+        plot=plot, date=date, amount=amount, source=source, period=period,
         transaction=transaction_row, notes=notes or "Переплата по выписке",
+    )
+
+
+def sync_refund(plot, *, amount, date, period, source, organization=None,
+                notes=""):
+    """
+    Выставить возврат по участку за период ровно на указанную сумму.
+
+    Расчёт можно запустить за один и тот же месяц повторно, и возврат
+    не должен выписываться заново: иначе каждый пересчёт дарил бы
+    человеку ещё столько же. Просто удалить прошлую строку тоже нельзя —
+    её уже могли зачесть в долг, и тогда пропала бы только половина
+    проводки. Поэтому доначисляем разницу: лента остаётся правдивой,
+    а итог сходится с текущим расчётом.
+    """
+    amount = Decimal(amount)
+    # Считаем все строки возврата за этот период — и первую, и
+    # поправочные. Строки расходования аванса сюда не попадают: у них
+    # period пуст, а источник свой.
+    already = PlotCredit.objects.filter(
+        plot=plot, period=period, source=source,
+    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+
+    delta = amount - already
+    if delta == 0:
+        return None
+    return PlotCredit.objects.create(
+        organization=organization or plot.organization,
+        plot=plot, date=date, amount=delta, source=source, period=period,
+        notes=notes or "Возврат",
     )
 
 

@@ -395,7 +395,12 @@ const lastReadingLabel = computed(() => {
     a.last_reading_date > b.last_reading_date ? a : b,
   )
   const d = new Date(latest.last_reading_date)
-  return `показание ${formatKwh(latest.last_reading_value)} от ${d.toLocaleDateString('ru-RU')}`
+  const when = d.toLocaleDateString('ru-RU')
+  if (latest.last_reading_estimated) {
+    return `расчётное ${formatKwh(latest.last_reading_value)} от ${when}`
+      + ' — показание за период не сдано'
+  }
+  return `показание ${formatKwh(latest.last_reading_value)} от ${when}`
 })
 
 // Ошибка конкретной строки. Потолок — долг именно этого начисления:

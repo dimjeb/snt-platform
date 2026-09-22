@@ -333,6 +333,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("ОПЛАТА"))
         self._check_payments(c, ME, CH)
 
+        # ---------------- Электроэнергия ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("ЭЛЕКТРОЭНЕРГИЯ"))
+        self._check_electricity_gaps()
+
         # ---------------- Суперадмин ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("СУПЕРАДМИН"))
         r = get("/api/plots/?page_size=1", AD)
@@ -451,6 +455,248 @@ class Command(BaseCommand):
                     r.status_code == 400 and isinstance(detail, str)
                     and "СНТ" in detail,
                     f"HTTP {r.status_code}, detail={detail!r}")
+
+    def _check_electricity_gaps(self):
+        """
+        Человек перестал сдавать показания, а потом вернулся.
+
+        Раньше расчёт брал просто последнее показание не позже даты
+        расчёта, поэтому молчуну каждый месяц заново начислялась одна и
+        та же старая разница, а когда он наконец сдавал показание —
+        ещё раз вся разница целиком. Флаг missing_reading не поднимался
+        ни разу, так что со стороны это выглядело обычным начислением.
+
+        Проверяем три вещи: книги сходятся с главным вводом, начисленные
+        киловатты совпадают со счётчиком, и месяцы без показаний честно
+        помечены расчётными.
+        """
+        from datetime import date
+        from decimal import Decimal
+
+        from billing.credits import credit_balance
+        from billing.models import BillingPeriod, Charge, PlotCredit
+        from electricity.models import EnergyTariff, Meter, MeterReading
+        from electricity.services import calculate_electricity
+        from members.models import Member, Plot, PlotOwnership
+        from organizations.models import Organization
+
+        org = Organization.objects.create(name="Проверка света", is_active=True)
+        EnergyTariff.objects.create(organization=org, valid_from=date(2024, 1, 1),
+                                    price_per_kwh="5.0000")
+        main = Meter.objects.create(organization=org, plot=None, is_main=True,
+                                    serial_number="СВ-ГЛ")
+
+        meters = {}
+        plots = {}
+        for num in ("1", "2"):
+            member = Member.objects.create(
+                organization=org, last_name=f"Светов{num}", first_name="С",
+            )
+            plot = Plot.objects.create(organization=org, number=num,
+                                       area_sotok="6.00")
+            PlotOwnership.objects.create(organization=org, plot=plot,
+                                         member=member, date_from=date(2024, 1, 1))
+            plots[num] = plot
+            meters[num] = Meter.objects.create(
+                organization=org, plot=plot, serial_number=f"СВ-{num}",
+            )
+
+        def add(meter, d, v):
+            MeterReading.objects.create(organization=org, meter=meter,
+                                        date=d, value=v)
+
+        # Январь и февраль сдают оба, дальше участок 2 молчит до июня.
+        add(main, date(2024, 1, 31), 10000)
+        add(meters["1"], date(2024, 1, 31), 1000)
+        add(meters["2"], date(2024, 1, 31), 2000)
+        add(main, date(2024, 2, 29), 10250)
+        add(meters["1"], date(2024, 2, 29), 1100)
+        add(meters["2"], date(2024, 2, 29), 2100)
+        for month, last_day, main_v, v1 in (
+            (3, 31, 10500, 1200), (4, 30, 10750, 1300), (5, 31, 11000, 1400),
+        ):
+            add(main, date(2024, month, last_day), main_v)
+            add(meters["1"], date(2024, month, last_day), v1)
+        by_month = {}
+
+        def run_month(month, last_day):
+            bp = BillingPeriod.objects.create(
+                organization=org, year=2024, month=month,
+                status=BillingPeriod.STATUS_OPEN,
+            )
+            by_month[month] = {
+                r.plot_number: r
+                for r in calculate_electricity(org, date(2024, month, last_day), bp)
+            }
+
+        def cabinet_flags(member, username):
+            """Что кабинет показывает про последнее показание участка."""
+            from accounts.models import User
+            from django.test import Client
+            from rest_framework_simplejwt.tokens import AccessToken
+
+            user, _ = User.objects.get_or_create(
+                username=username,
+                defaults={"organization": org, "role": User.ROLE_MEMBER,
+                          "member": member, "is_active": True},
+            )
+            cab = Client(SERVER_NAME=self._server_name())
+            resp = cab.get(
+                "/api/payments/my-debt/",
+                HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(user)}",
+            )
+            rows = (self._json(resp) or {}).get("meters") or []
+            return resp.status_code, [m.get("last_reading_estimated") for m in rows]
+
+        for month, last_day in ((2, 29), (3, 31), (4, 30), (5, 31)):
+            run_month(month, last_day)
+
+        # Пока человек молчит, последнее показание у него расчётное, и
+        # кабинет обязан это сказать: иначе он видит цифру, которой не
+        # сдавал, и сумму без объяснения, откуда она взялась.
+        silent_member = plots["2"].current_owner
+        code, flags = cabinet_flags(silent_member, "__check_svet_2__")
+        self.verify(
+            "кабинет помечает расчётное показание расчётным",
+            code == 200 and flags == [True], f"HTTP {code}, флаги {flags}",
+        )
+        code, flags = cabinet_flags(plots["1"].current_owner, "__check_svet_1__")
+        self.verify(
+            "настоящее показание расчётным не помечается",
+            code == 200 and flags == [False], f"HTTP {code}, флаги {flags}",
+        )
+
+        # В июне молчун наконец сдаёт показание: за четыре месяца 300
+        # кВт·ч. Вносим его только сейчас — до этого момента его в базе
+        # быть не должно, иначе кабинет показывал бы будущее показание
+        # вместо расчётного, и проверка выше ничего бы не проверяла.
+        add(main, date(2024, 6, 30), 11250)
+        add(meters["1"], date(2024, 6, 30), 1500)
+        add(meters["2"], date(2024, 6, 30), 2400)
+        run_month(6, 30)
+
+        # Показание пришло — пометка снимается
+        code, flags = cabinet_flags(silent_member, "__check_svet_2__")
+        self.verify(
+            "после настоящего показания пометка снимается",
+            code == 200 and flags == [False], f"HTTP {code}, флаги {flags}",
+        )
+
+        # 1. Месяцы без показаний помечены расчётными
+        silent = [by_month[m]["2"].missing_reading for m in (3, 4, 5)]
+        self.verify("месяцы без показаний помечены расчётными",
+                    all(silent), f"март/апрель/май: {silent}")
+        self.verify("у сдававшего расчётных месяцев нет",
+                    not any(by_month[m]["1"].missing_reading
+                            for m in (2, 3, 4, 5, 6)))
+
+        # 2. Расчётное показание записано и видно как расчётное
+        est = MeterReading.objects.filter(meter=meters["2"], is_estimated=True)
+        self.verify("расчётные показания записаны", est.count() == 3,
+                    f"их {est.count()} вместо 3")
+
+        # 3. Начисленные киловатты не задваиваются: метрическая часть
+        #    начислений должна сойтись с самим счётчиком (2000 → 2400).
+        metered = sum(
+            (by_month[m]["2"].consumption for m in by_month), Decimal("0"),
+        )
+        # Часть начисленного вернулась деньгами: среднее оказалось выше
+        # настоящего показания. Сравнивать со счётчиком надо за вычетом
+        # возврата, иначе проверка ругается на исправную работу.
+        refunds = PlotCredit.objects.filter(
+            plot=plots["2"], source=PlotCredit.SOURCE_ELECTRICITY,
+        )
+        refunded_kwh = (
+            sum((e.amount for e in refunds), Decimal("0")) / Decimal("5.0000")
+        )
+        net = metered - refunded_kwh
+        self.verify(
+            "расход по счётчику не начисляется дважды",
+            abs(net - Decimal("400")) <= Decimal("0.01"),
+            f"начислено {metered} кВт·ч, возвращено {refunded_kwh} кВт·ч, "
+            f"итого {net} при показаниях 2000 → 2400",
+        )
+        credited = refunds.filter(amount__gt=0).count()
+
+        # 4. Завышенное среднее возвращается, а не оседает у товарищества
+        self.verify("переплата по среднему возвращается авансом",
+                    credited > 0, f"строк возврата: {credited}")
+
+        # 5. Книги сходятся: начислено ровно столько, сколько зашло на ввод
+        charged = sum(
+            (c.kwh for c in Charge.objects.filter(
+                organization=org, charge_type__category="electricity")),
+            Decimal("0"),
+        )
+        self.verify(
+            "начислено ровно по главному вводу",
+            abs(charged - Decimal("1250")) <= Decimal("0.01"),
+            f"начислено {charged} кВт·ч, ввод 10000 → 11250 = 1250",
+        )
+
+        # 6. Повторный расчёт за тот же месяц ничего не задваивает
+        bp_june = BillingPeriod.objects.get(organization=org, month=6)
+        before_charges = Charge.objects.filter(organization=org).count()
+        before_readings = MeterReading.objects.filter(
+            meter__organization=org).count()
+        calculate_electricity(org, date(2024, 6, 30), bp_june)
+        self.verify(
+            "повторный расчёт не задваивает начисления",
+            Charge.objects.filter(organization=org).count() == before_charges,
+            f"было {before_charges}, стало "
+            f"{Charge.objects.filter(organization=org).count()}",
+        )
+        self.verify(
+            "повторный расчёт не выписывает возврат второй раз",
+            PlotCredit.objects.filter(
+                plot=plots["2"], source=PlotCredit.SOURCE_ELECTRICITY,
+            ).count() == 1,
+            f"строк возврата: "
+            f"{PlotCredit.objects.filter(plot=plots['2'], source=PlotCredit.SOURCE_ELECTRICITY).count()}",
+        )
+        self.verify(
+            "повторный расчёт не плодит расчётные показания",
+            MeterReading.objects.filter(
+                meter__organization=org).count() == before_readings,
+            f"было {before_readings}, стало "
+            f"{MeterReading.objects.filter(meter__organization=org).count()}",
+        )
+
+        # 7. Показание, снятое в середине месяца, считается за месяц,
+        #    даже если расчёт запустили с датой первого числа. Фронт
+        #    присылал именно первое число — окно «с 1-го по 1-е»
+        #    означало бы «показаний нет» почти у всех.
+        bp_aug = BillingPeriod.objects.create(
+            organization=org, year=2024, month=8,
+            status=BillingPeriod.STATUS_OPEN,
+        )
+        add(main, date(2024, 8, 20), 11750)
+        add(meters["1"], date(2024, 8, 20), 1700)
+        add(meters["2"], date(2024, 8, 20), 2600)
+        res = {r.plot_number: r for r in
+               calculate_electricity(org, date(2024, 8, 1), bp_aug)}
+        self.verify(
+            "показание от середины месяца считается за месяц",
+            not any(r.missing_reading for r in res.values()),
+            f"расчётными помечены: "
+            f"{[n for n, r in res.items() if r.missing_reading]}",
+        )
+
+        # 8. Нет показания по главному вводу — потери не выдумываются
+        bp_july = BillingPeriod.objects.create(
+            organization=org, year=2024, month=7,
+            status=BillingPeriod.STATUS_OPEN,
+        )
+        add(meters["1"], date(2024, 7, 31), 1600)
+        add(meters["2"], date(2024, 7, 31), 2500)
+        res = {r.plot_number: r for r in
+               calculate_electricity(org, date(2024, 7, 31), bp_july)}
+        self.verify(
+            "без показания главного ввода потери не распределяются",
+            all(r.loss_share == 0 for r in res.values()),
+            f"доли потерь: {[str(r.loss_share) for r in res.values()]}",
+        )
+
 
     def _check_co_ownership(self, c, chairman_headers):
         """
