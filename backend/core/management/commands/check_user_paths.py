@@ -150,6 +150,15 @@ class Command(BaseCommand):
             bank_corr_account="30101810145250000411",
         )
 
+        # Второе активное товарищество. Без него в пустой базе
+        # организация одна, middleware подставляет её суперадмину
+        # автоматически, и путь «суперадмин без выбранного СНТ» —
+        # тот самый, на котором не работала кнопка целевого взноса, —
+        # проверить невозможно.
+        self._other_org = Organization.objects.create(
+            name="Проверка развёртывания (второе)", is_active=True,
+        )
+
         # Три члена: проверкам нужен и page_size=3, и второй собственник
         # для общей собственности.
         members = [
@@ -269,6 +278,8 @@ class Command(BaseCommand):
                      {"amount": "1500.00", "description": "проверка"}, CH)
             self.verify("массовое начисление", r.status_code == 200, f"HTTP {r.status_code}")
 
+            self._check_target_charges(c, CH, AD, pid)
+
             r = post("/api/electricity/meters/calculate/",
                      {"billing_period_id": pid, "period_date": "2024-08-01"}, CH)
             data = self._json(r) or {}
@@ -335,6 +346,111 @@ class Command(BaseCommand):
         data = self._json(r) or {}
         self.verify("роль суперадмина проставлена", data.get("role") == "superadmin",
                     f"role={data.get('role')}")
+
+    def _check_target_charges(self, c, chairman_headers, admin_headers, period_id):
+        """
+        Целевой взнос: создание вида начисления и массовое начисление.
+
+        Путь целиком серверный, но ломался он с фронта: кнопка звала
+        ручку, которой нужен вид начисления и выбранное СНТ. У
+        суперадмина СНТ не выбрано, и запрос падал пятисоткой внутри
+        ORM — по ответу было не понять, что именно не так.
+        """
+        import json as _json
+
+        org_id = self._fixture_org.pk
+
+        def post(url, payload, hdr):
+            return c.post(url, data=_json.dumps(payload),
+                          content_type="application/json", **hdr)
+
+        admin_org = dict(admin_headers, HTTP_X_ORG_ID=str(org_id))
+
+        # Вид начисления заводится прямо из диалога целевого взноса
+        r = post("/api/billing/charge-types/",
+                 {"name": "Ремонт дороги (проверка)", "category": "target",
+                  "is_active": True}, chairman_headers)
+        ctype = self._json(r) or {}
+        self.verify("вид целевого начисления создаётся",
+                    r.status_code == 201 and bool(ctype.get("id")),
+                    f"HTTP {r.status_code}")
+        if not ctype.get("id"):
+            return
+
+        # Суперадмин без выбранного СНТ: понятная ошибка, а не 500
+        r = post("/api/billing/charge-types/",
+                 {"name": "Без СНТ", "category": "target"}, admin_headers)
+        detail = (self._json(r) or {}).get("detail")
+        self.verify("суперадмину без СНТ отвечают 400 с текстом",
+                    r.status_code == 400 and isinstance(detail, str)
+                    and "СНТ" in detail,
+                    f"HTTP {r.status_code}, detail={detail!r}")
+
+        # Он же с выбранным СНТ — работает
+        r = post("/api/billing/charge-types/",
+                 {"name": "Через переключатель", "category": "target"}, admin_org)
+        self.verify("суперадмин с выбранным СНТ заводит вид начисления",
+                    r.status_code == 201, f"HTTP {r.status_code}")
+
+        url = f"/api/billing/periods/{period_id}/create_target_charges/"
+
+        # Чужой вид начисления — 400, а не 500
+        from billing.models import Charge, ChargeType
+        from members.models import Plot
+
+        alien = ChargeType.objects.create(
+            organization=self._other_org, name="Чужой вид",
+            category=ChargeType.TYPE_TARGET,
+        )
+        r = post(url, {"charge_type_id": alien.pk, "amount": "100.00"},
+                 chairman_headers)
+        self.verify("чужой вид начисления отклоняется",
+                    r.status_code == 400, f"HTTP {r.status_code}")
+
+        # Начисление выбранным участкам
+        plots = list(Plot.objects.filter(
+            organization=self._fixture_org).order_by("pk"))
+        r = post(url, {"charge_type_id": ctype["id"], "amount": "500.00",
+                       "description": "проверка", "plot_ids": [plots[0].pk]},
+                 chairman_headers)
+        data = self._json(r) or {}
+        self.verify("целевой взнос выбранным участкам",
+                    r.status_code == 200 and data.get("created") == 1,
+                    f"HTTP {r.status_code}, создано {data.get('created')}")
+
+        # Повторно по тем же участкам — дублей быть не должно
+        r = post(url, {"charge_type_id": ctype["id"], "amount": "500.00",
+                       "plot_ids": [plots[0].pk]}, chairman_headers)
+        data = self._json(r) or {}
+        self.verify("повторное начисление не задваивает",
+                    r.status_code == 200 and data.get("created") == 0,
+                    f"HTTP {r.status_code}, создано {data.get('created')}")
+
+        # Всем участкам: остальные добираются, первый уже начислен
+        r = post(url, {"charge_type_id": ctype["id"], "amount": "500.00"},
+                 chairman_headers)
+        data = self._json(r) or {}
+        self.verify("целевой взнос всем участкам",
+                    r.status_code == 200
+                    and data.get("created") == len(plots) - 1,
+                    f"HTTP {r.status_code}, создано {data.get('created')} "
+                    f"из ожидаемых {len(plots) - 1}")
+
+        # Начислено ровно по своему товариществу
+        alien_charges = Charge.objects.filter(
+            organization=self._other_org, charge_type__category="target"
+        ).count()
+        self.verify("чужое товарищество не затронуто", alien_charges == 0,
+                    f"начислений в чужом СНТ: {alien_charges}")
+
+        # Суперадмин без СНТ — тот самый отчёт пользователя
+        r = post(url, {"charge_type_id": ctype["id"], "amount": "500.00"},
+                 admin_headers)
+        detail = (self._json(r) or {}).get("detail")
+        self.verify("целевой взнос суперадмином без СНТ: 400 с текстом",
+                    r.status_code == 400 and isinstance(detail, str)
+                    and "СНТ" in detail,
+                    f"HTTP {r.status_code}, detail={detail!r}")
 
     def _check_co_ownership(self, c, chairman_headers):
         """

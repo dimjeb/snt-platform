@@ -1,7 +1,9 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from core.permissions import IsTreasurer, IsOrgMember, OrgQuerysetMixin
+from core.permissions import (
+    IsOrgMember, IsTreasurer, OrgQuerysetMixin, require_org,
+)
 from .models import ChargeType, BillingPeriod, Charge, Payment
 from .serializers import (
     ChargeTypeSerializer, BillingPeriodSerializer, ChargeSerializer,
@@ -31,7 +33,7 @@ class ChargeTypeViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     permission_classes = [IsTreasurer]
 
     def perform_create(self, serializer):
-        serializer.save(organization=self.request.org)
+        serializer.save(organization=require_org(self.request))
 
 
 class BillingPeriodViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
@@ -40,7 +42,7 @@ class BillingPeriodViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     permission_classes = [IsTreasurer]
 
     def perform_create(self, serializer):
-        serializer.save(organization=self.request.org)
+        serializer.save(organization=require_org(self.request))
 
     # Все три операции относятся к конкретному расчётному периоду, поэтому
     # маршруты detail: период берётся из URL, а не из тела запроса. Раньше
@@ -51,7 +53,7 @@ class BillingPeriodViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     def debt_summary(self, request, pk=None):
         """Сводка долгов по участкам за этот расчётный период."""
         period = self.get_object()
-        return Response(get_debt_summary(request.org, period=period))
+        return Response(get_debt_summary(require_org(request), period=period))
 
     @action(detail=True, methods=["post"])
     def create_membership_charges(self, request, pk=None):
@@ -70,9 +72,18 @@ class BillingPeriodViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
         period = self.get_object()
         s = BulkTargetChargeSerializer(data=request.data)
         s.is_valid(raise_exception=True)
-        charge_type = ChargeType.objects.get(
-            pk=s.validated_data["charge_type_id"], organization=request.org
-        )
+        org = require_org(request)
+        try:
+            charge_type = ChargeType.objects.get(
+                pk=s.validated_data["charge_type_id"], organization=org
+            )
+        except ChargeType.DoesNotExist:
+            # Вид начисления из другого СНТ или удалённый: без явной
+            # обработки запрос падал с 500 внутри ORM.
+            return Response(
+                {"detail": "Вид начисления не найден в этом товариществе."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         count = create_target_charges(
             period, charge_type,
             s.validated_data["amount"],
@@ -95,7 +106,7 @@ class ChargeViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
         return [IsTreasurer()]
 
     def perform_create(self, serializer):
-        serializer.save(organization=self.request.org)
+        serializer.save(organization=require_org(self.request))
 
 
 class PaymentViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
@@ -106,7 +117,7 @@ class PaymentViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(
-            organization=self.request.org,
+            organization=require_org(self.request),
             recorded_by=self.request.user,
         )
 
@@ -148,7 +159,7 @@ class BankStatementViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
 
         try:
             statement, stats = import_statement(
-                request.org, raw=upload.read(), file_name=upload.name,
+                require_org(request), raw=upload.read(), file_name=upload.name,
                 user=request.user,
             )
         except (StatementError, StatementImportError) as exc:

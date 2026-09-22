@@ -103,6 +103,55 @@
       </q-card>
     </q-dialog>
 
+    <!-- Диалог: целевой взнос -->
+    <q-dialog v-model="bulkTargetDialog" persistent>
+      <q-card style="min-width:340px;max-width:480px">
+        <q-card-section class="text-h6">Начислить целевой взнос</q-card-section>
+        <q-card-section class="q-gutter-sm">
+          <q-select
+            v-model="targetForm.charge_type_id"
+            :options="chargeTypeOptions"
+            :loading="chargeTypesLoading"
+            option-label="label" option-value="value"
+            emit-value map-options
+            label="Вид начисления *"
+            outlined dense
+            use-input fill-input hide-selected input-debounce="0"
+            hint="Впишите название и нажмите Enter, чтобы завести новый вид"
+            @filter="filterChargeTypes"
+            @new-value="createChargeType"
+          />
+          <q-input v-model="targetForm.amount" label="Сумма на участок (₽) *" outlined dense type="number" />
+          <q-input v-model="targetForm.description" label="Описание" outlined dense />
+
+          <q-option-group
+            v-model="targetScope"
+            :options="[
+              { label: 'Всем участкам', value: 'all' },
+              { label: 'Выбранным участкам', value: 'some' },
+            ]"
+            color="blue-8" dense inline
+          />
+          <q-select
+            v-if="targetScope === 'some'"
+            v-model="targetForm.plot_ids"
+            :options="plotOptions"
+            :loading="plotsLoading"
+            option-label="label" option-value="value"
+            emit-value map-options
+            multiple use-chips use-input input-debounce="0"
+            label="Участки"
+            outlined dense
+            @filter="filterPlots"
+          />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="Отмена" v-close-popup />
+          <q-btn color="blue-8" label="Начислить" :loading="actionLoading" @click="createTarget" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
     <!-- Диалог: платёж -->
     <q-dialog v-model="paymentDialog" persistent>
       <q-card style="min-width:320px">
@@ -144,6 +193,14 @@ const bulkMembershipDialog = ref(false)
 const bulkTargetDialog = ref(false)
 const paymentDialog = ref(false)
 const membershipForm = ref({ amount: '', description: '' })
+const targetForm = ref({ charge_type_id: null, amount: '', description: '', plot_ids: [] })
+const targetScope = ref('all')
+const allChargeTypes = ref([])
+const chargeTypeOptions = ref([])
+const chargeTypesLoading = ref(false)
+const allPlots = ref([])
+const plotOptions = ref([])
+const plotsLoading = ref(false)
 const payForm = ref({ charge: null, amount: '', date: new Date().toISOString().slice(0, 10), method: 'cash' })
 const chargeOptions = ref([])
 
@@ -181,6 +238,125 @@ async function onPeriodChange(pid) {
   }))
 }
 
+// Сообщение с сервера важнее общего «Ошибка»: именно так пользователь
+// узнаёт, что, например, не выбрано СНТ или вид начисления чужой.
+function errText(e, fallback) {
+  const d = e?.response?.data
+  if (!d) return fallback
+  if (typeof d === 'string') return d
+  if (typeof d.detail === 'string') return d.detail
+  if (Array.isArray(d.detail)) return d.detail.join(' ')
+  if (Array.isArray(d)) return d.join(' ')
+  const first = Object.values(d)[0]
+  if (Array.isArray(first)) return first.join(' ')
+  if (typeof first === 'string') return first
+  return fallback
+}
+
+async function loadChargeTypes() {
+  chargeTypesLoading.value = true
+  try {
+    const { data } = await api.get('/billing/charge-types/?page_size=200')
+    const list = data.results || data
+    allChargeTypes.value = list
+      .filter((t) => t.category === 'target' && t.is_active)
+      .map((t) => ({ label: t.name, value: t.id }))
+    chargeTypeOptions.value = allChargeTypes.value
+  } catch (e) {
+    $q.notify({ type: 'negative', message: errText(e, 'Не удалось загрузить виды начислений') })
+  } finally { chargeTypesLoading.value = false }
+}
+
+// Целевые взносы каждый раз новые («ремонт дороги», «замена трансформатора»),
+// заводить их заранее в отдельном разделе неудобно — поэтому вид начисления
+// создаётся прямо отсюда.
+function filterChargeTypes(val, update) {
+  update(() => {
+    const q = (val || '').toLowerCase()
+    chargeTypeOptions.value = q
+      ? allChargeTypes.value.filter((t) => t.label.toLowerCase().includes(q))
+      : allChargeTypes.value
+  })
+}
+
+async function createChargeType(name, done) {
+  const title = (name || '').trim()
+  if (!title) { done(null); return }
+  try {
+    const { data } = await api.post('/billing/charge-types/', {
+      name: title, category: 'target', is_active: true,
+    })
+    const opt = { label: data.name, value: data.id }
+    allChargeTypes.value = [...allChargeTypes.value, opt]
+    chargeTypeOptions.value = allChargeTypes.value
+    done(opt.value)
+  } catch (e) {
+    done(null)
+    $q.notify({ type: 'negative', message: errText(e, 'Не удалось создать вид начисления') })
+  }
+}
+
+async function loadPlots() {
+  if (allPlots.value.length) return
+  plotsLoading.value = true
+  try {
+    const { data } = await api.get('/plots/?page_size=500')
+    allPlots.value = (data.results || data).map((p) => ({
+      label: `Уч. №${p.number}${p.current_owner ? ' — ' + p.current_owner.full_name : ''}`,
+      value: p.id,
+      number: String(p.number),
+    }))
+  } finally { plotsLoading.value = false }
+}
+
+function filterPlots(val, update) {
+  loadPlots().then(() => {
+    update(() => {
+      const q = (val || '').toLowerCase()
+      plotOptions.value = q
+        ? allPlots.value.filter((p) => p.label.toLowerCase().includes(q))
+        : allPlots.value
+    })
+  })
+}
+
+async function createTarget() {
+  if (!targetForm.value.charge_type_id) {
+    $q.notify({ type: 'warning', message: 'Выберите вид начисления' })
+    return
+  }
+  if (!Number(targetForm.value.amount)) {
+    $q.notify({ type: 'warning', message: 'Укажите сумму' })
+    return
+  }
+  const plotIds = targetScope.value === 'some' ? targetForm.value.plot_ids : null
+  if (targetScope.value === 'some' && !plotIds.length) {
+    $q.notify({ type: 'warning', message: 'Выберите хотя бы один участок' })
+    return
+  }
+  actionLoading.value = true
+  try {
+    const { data } = await api.post(
+      `/billing/periods/${selectedPeriod.value}/create_target_charges/`,
+      {
+        charge_type_id: targetForm.value.charge_type_id,
+        amount: targetForm.value.amount,
+        description: targetForm.value.description,
+        // plot_ids не шлём вовсе, если начисляем всем: сериализатор
+        // трактует отсутствие поля как «все участки».
+        ...(plotIds ? { plot_ids: plotIds } : {}),
+      },
+    )
+    bulkTargetDialog.value = false
+    targetForm.value = { charge_type_id: null, amount: '', description: '', plot_ids: [] }
+    targetScope.value = 'all'
+    await onPeriodChange(selectedPeriod.value)
+    $q.notify({ type: 'positive', message: `Начислено участков: ${data.created}` })
+  } catch (e) {
+    $q.notify({ type: 'negative', message: errText(e, 'Не удалось начислить') })
+  } finally { actionLoading.value = false }
+}
+
 async function createMembership() {
   actionLoading.value = true
   try {
@@ -188,7 +364,7 @@ async function createMembership() {
     bulkMembershipDialog.value = false
     await onPeriodChange(selectedPeriod.value)
     $q.notify({ type: 'positive', message: 'Взносы начислены' })
-  } catch { $q.notify({ type: 'negative', message: 'Ошибка' }) }
+  } catch (e) { $q.notify({ type: 'negative', message: errText(e, 'Ошибка') }) }
   finally { actionLoading.value = false }
 }
 
@@ -199,9 +375,12 @@ async function createPayment() {
     paymentDialog.value = false
     await onPeriodChange(selectedPeriod.value)
     $q.notify({ type: 'positive', message: 'Платёж внесён' })
-  } catch { $q.notify({ type: 'negative', message: 'Ошибка' }) }
+  } catch (e) { $q.notify({ type: 'negative', message: errText(e, 'Ошибка') }) }
   finally { actionLoading.value = false }
 }
 
-onMounted(loadPeriods)
+onMounted(async () => {
+  await loadPeriods()
+  if (auth.isChairman || auth.isTreasurer) await loadChargeTypes()
+})
 </script>

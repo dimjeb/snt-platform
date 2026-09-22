@@ -4,7 +4,9 @@ from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 from core.audit import AccessLoggedMixin
-from core.permissions import IsTreasurer, IsOrgMember, OrgQuerysetMixin
+from core.permissions import (
+    IsTreasurer, IsOrgMember, OrgQuerysetMixin, require_org,
+)
 from .models import Member, Plot, PlotOwnership
 from .serializers import (
     MemberSerializer,
@@ -35,7 +37,7 @@ class MemberViewSet(AccessLoggedMixin, OrgQuerysetMixin, viewsets.ModelViewSet):
         return [IsTreasurer()]
 
     def perform_create(self, serializer):
-        serializer.save(organization=self.request.org)
+        serializer.save(organization=require_org(self.request))
 
     @action(detail=False, methods=["get"], url_path="short")
     def short(self, request):
@@ -102,7 +104,7 @@ class PlotViewSet(AccessLoggedMixin, OrgQuerysetMixin, viewsets.ModelViewSet):
         return qs.distinct()
 
     def perform_create(self, serializer):
-        serializer.save(organization=self.request.org)
+        serializer.save(organization=require_org(self.request))
 
 
 class PlotOwnershipViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
@@ -112,4 +114,4 @@ class PlotOwnershipViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     filterset_fields = ["plot", "member"]
 
     def perform_create(self, serializer):
-        serializer.save(organization=self.request.org)
+        serializer.save(organization=require_org(self.request))

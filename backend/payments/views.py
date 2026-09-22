@@ -22,7 +22,9 @@ from rest_framework.views import APIView
 from billing.models import Charge, ChargeType
 from core.audit import record_access
 from core.models import AccessLog
-from core.permissions import IsOrgMember, IsTreasurer, OrgQuerysetMixin
+from core.permissions import (
+    IsOrgMember, IsTreasurer, OrgQuerysetMixin, require_org,
+)
 
 from .drivers import ProviderError, WebhookAuthError, get_driver
 from .qr import QRError, build_payment_payload, build_purpose, render_png
@@ -514,7 +516,7 @@ class ObligatoryPaymentViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     ordering_fields = ["due_date", "amount", "status"]
 
     def perform_create(self, serializer):
-        serializer.save(organization=self.request.org)
+        serializer.save(organization=require_org(self.request))
 
     def perform_update(self, serializer):
         # Кто провёл платёж, фиксируем автоматически: вручную это поле
