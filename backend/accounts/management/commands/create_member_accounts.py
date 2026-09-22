@@ -66,6 +66,13 @@ class Command(BaseCommand):
             help="Куда выгрузить логины и пароли (файл с правами 600)",
         )
         parser.add_argument(
+            "--plot", action="append", default=[], metavar="НОМЕР",
+            help=(
+                "Только собственникам этих участков. Можно повторять: "
+                "--plot 87 --plot 88. Без него — всем членам товарищества."
+            ),
+        )
+        parser.add_argument(
             "--dry-run", action="store_true",
             help="Показать, что будет сделано, без записи в базу и файл",
         )
@@ -89,6 +96,29 @@ class Command(BaseCommand):
             .prefetch_related("ownerships__plot")
             .order_by("last_name", "first_name", "pk")
         )
+
+        # Точечная выдача. Нужна, чтобы проверить цепочку на одном
+        # человеке, не заводя сразу полтораста учёток и не создавая файл
+        # с паролями и ПДн всего товарищества раньше времени.
+        wanted_plots = [p.strip() for p in options["plot"] if p.strip()]
+        if wanted_plots:
+            from members.models import Plot
+
+            found = Plot.objects.filter(organization=org, number__in=wanted_plots)
+            missing = set(wanted_plots) - set(found.values_list("number", flat=True))
+            if missing:
+                raise CommandError(
+                    "Нет таких участков: " + ", ".join(sorted(missing))
+                )
+            members = members.filter(
+                ownerships__plot__in=found,
+                ownerships__date_to__isnull=True,
+            ).distinct()
+            if not members:
+                raise CommandError(
+                    "У этих участков нет текущих собственников — "
+                    "заводить учётку некому."
+                )
 
         existing = set(
             User.objects.filter(member__organization=org)
@@ -149,7 +179,12 @@ class Command(BaseCommand):
                 User.objects.bulk_create([r[0] for r in rows])
 
         self.stdout.write(f"Организация: {org.name}")
-        self.stdout.write(f"Членов всего: {members.count()}")
+        if wanted_plots:
+            self.stdout.write(f"Участки: {', '.join(wanted_plots)}")
+        self.stdout.write(
+            f"{'Собственников' if wanted_plots else 'Членов всего'}: "
+            f"{members.count()}"
+        )
         self.stdout.write(f"Учётка уже есть: {skipped}")
         self.stdout.write(
             f"{'Будет заведено' if dry else 'Заведено'} учётных записей: {created}"

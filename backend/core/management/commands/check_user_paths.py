@@ -385,6 +385,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("ОПЛАТА"))
         self._check_payments(c, ME, CH)
 
+        # ---------------- Выдача учёток ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("ВЫДАЧА УЧЁТОК"))
+        self._check_account_issuance()
+
         # ---------------- Электроэнергия ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("ЭЛЕКТРОЭНЕРГИЯ"))
         self._check_electricity_gaps()
@@ -801,6 +805,96 @@ class Command(BaseCommand):
             f"доли потерь: {[str(r.loss_share) for r in res.values()]}",
         )
 
+
+    def _check_account_issuance(self):
+        """
+        Выдача учёток членам: точечно по участку и файл с паролями.
+
+        Команда трогает сразу полтораста живых учётных записей и пишет
+        файл с действующими паролями и ПДн, поэтому здесь проверяется
+        и то, что она заводит ровно кого просили, и то, что файл
+        недоступен посторонним.
+        """
+        import csv
+        import os
+        import tempfile
+
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        from accounts.models import User
+        from members.models import Plot
+
+        org = self._fixture_org
+        # Участок, у собственника которого учётки ещё нет: команда
+        # идемпотентна и на участке с готовой учёткой завела бы ноль.
+        with_account = set(
+            User.objects.filter(member__organization=org)
+            .values_list("member_id", flat=True)
+        )
+        plot = next(
+            (pl for pl in Plot.objects.filter(organization=org).order_by("number")
+             if any(o.date_to is None and o.member_id not in with_account
+                    for o in pl.ownerships.all())),
+            None,
+        )
+        if plot is None:
+            self.verify("есть участок без выданной учётки для проверки", False)
+            return
+        before = User.objects.filter(member__organization=org).count()
+
+        out = os.path.join(tempfile.mkdtemp(), "creds.csv")
+        try:
+            call_command("create_member_accounts", org=org.name,
+                         plot=[plot.number], out=out, verbosity=0)
+
+            created = User.objects.filter(member__organization=org).count() - before
+            self.verify("учётка заводится точечно по участку", created == 1,
+                        f"заведено {created} вместо 1")
+
+            if not os.path.exists(out):
+                self.verify("файл с паролями создан", False, out)
+                return
+
+            mode = oct(os.stat(out).st_mode & 0o777)
+            self.verify("файл с паролями закрыт от посторонних",
+                        mode == "0o600", f"права {mode}")
+
+            with open(out, encoding="utf-8-sig") as fh:
+                rows = list(csv.reader(fh, delimiter=";"))
+            self.verify("в файле ровно одна строка с паролем",
+                        len(rows) == 2, f"строк {len(rows)}")
+
+            user = (
+                User.objects.filter(member__organization=org)
+                .order_by("-pk").first()
+            )
+            self.verify(
+                "новая учётка — член СНТ с обязательной сменой пароля",
+                user.role == User.ROLE_MEMBER and user.must_change_password
+                and user.organization_id == org.pk,
+                f"роль {user.role}, смена {user.must_change_password}",
+            )
+
+            again = User.objects.filter(member__organization=org).count()
+            call_command("create_member_accounts", org=org.name,
+                         plot=[plot.number], out=out, verbosity=0)
+            self.verify(
+                "повторный запуск не задваивает учётки",
+                User.objects.filter(member__organization=org).count() == again,
+                "появились лишние записи",
+            )
+
+            try:
+                call_command("create_member_accounts", org=org.name,
+                             plot=["НЕТ-ТАКОГО"], dry_run=True, verbosity=0)
+                bad = "команда не заметила несуществующий участок"
+            except CommandError:
+                bad = None
+            self.verify("несуществующий участок отклоняется", bad is None, bad or "")
+        finally:
+            if os.path.exists(out):
+                os.unlink(out)
 
     def _check_co_ownership(self, c, chairman_headers):
         """
