@@ -284,7 +284,22 @@
         </q-card>
       </q-dialog>
 
-      <q-card flat bordered class="q-mb-md" v-if="!myDebts.length && debtsLoaded">
+      <!-- Учётка не привязана к члену СНТ: начислений не будет никогда.
+           Показывать здесь «Задолженности нет» — значит врать. -->
+      <q-card flat bordered class="q-mb-md bg-orange-1" v-if="debtsLoaded && !memberLinked">
+        <q-card-section class="text-center">
+          <q-icon name="link_off" color="orange-9" size="28px" />
+          <div class="q-mt-xs text-weight-bold">
+            Учётная запись не связана с членом СНТ
+          </div>
+          <div class="q-mt-xs text-caption text-grey-8">
+            Начисления по вашему участку в кабинет не попадут, пока эта
+            связь не установлена. Обратитесь к председателю или казначею.
+          </div>
+        </q-card-section>
+      </q-card>
+
+      <q-card flat bordered class="q-mb-md" v-if="!myDebts.length && debtsLoaded && memberLinked">
         <q-card-section class="text-center text-grey-6">
           <q-icon name="check_circle" color="positive" size="28px" />
           <div class="q-mt-xs">Задолженности нет</div>
@@ -361,6 +376,7 @@ const advance = ref(0)
 const meters = ref([])
 const onlineAvailable = ref(false)
 const debtsLoaded = ref(false)
+const memberLinked = ref(true)
 const paying = ref(false)
 const payResult = ref(null)
 // Сколько платить за каждое начисление: { [charge_id]: строка из поля }
@@ -473,6 +489,7 @@ async function loadMyDebt() {
     advance.value = Number(data.advance || 0)
     meters.value = data.meters || []
     onlineAvailable.value = !!data.online_available
+    memberLinked.value = data.member_linked !== false
     // По умолчанию предлагаем заплатить всё: частичная оплата — это
     // осознанный выбор, а не то, что надо набирать руками каждый раз.
     fillAll()

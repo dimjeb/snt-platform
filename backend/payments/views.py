@@ -173,6 +173,11 @@ class MyDebtView(APIView):
         ) if member else Decimal("0")
 
         return Response({
+            # Учётная запись может быть не связана с членом СНТ — тогда
+            # начислений не будет никогда, сколько их ни выставляй.
+            # Без этого флага кабинет показывал зелёную галочку
+            # «Задолженности нет», то есть ровно противоположное правде.
+            "member_linked": member is not None,
             "total_debt": electricity_debt + other_debt,
             "electricity_debt": electricity_debt,
             "other_debt": other_debt,

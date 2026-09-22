@@ -143,9 +143,42 @@ class Command(BaseCommand):
         from accounts.models import User
 
         accounts_ok = False
+        from members.models import Member
+
         for own in current:
             member = own.member
             self.stdout.write(f"      {show(member.full_name)} (member id={member.pk})")
+
+            # Однофамильцы с тем же отчеством — почти всегда дубль после
+            # импорта реестра. Участок при этом закреплён за одной
+            # записью, а учётная запись заведена на другую: в диалоге
+            # участка ФИО верное, а в кабинете пусто.
+            twins = list(
+                Member.objects.filter(
+                    organization=plot.organization,
+                    last_name=member.last_name,
+                    first_name=member.first_name,
+                    patronymic=member.patronymic,
+                ).exclude(pk=member.pk)
+            )
+            if twins:
+                self.stdout.write(warn(
+                    f"        ! В реестре есть ещё {len(twins)} запись(и) с "
+                    f"тем же ФИО: id {', '.join(str(t.pk) for t in twins)}"
+                ))
+                for twin in twins:
+                    twin_users = list(User.objects.filter(member=twin))
+                    logins = ", ".join(u.username for u in twin_users) or "нет"
+                    twin_plots = ", ".join(pl.number for pl in twin.plots) or "нет"
+                    self.stdout.write(
+                        f"          id={twin.pk}: учётки — {logins}; участки — {twin_plots}"
+                    )
+                self.stdout.write(
+                    "          Если заходили под учёткой из этой строки, она "
+                    "привязана к другой записи члена, и участок ей не виден. "
+                    "Нужно оставить одну запись и перепривязать."
+                )
+
             users = list(User.objects.filter(member=member))
             if not users:
                 self.stdout.write(bad(

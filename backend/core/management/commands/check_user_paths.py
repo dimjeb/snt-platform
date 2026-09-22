@@ -329,6 +329,32 @@ class Command(BaseCommand):
         self.verify("профиль отдаёт member_id", data.get("member_id") is not None,
                     f"HTTP {r.status_code}")
 
+        r = get("/api/payments/my-debt/", ME)
+        data = self._json(r) or {}
+        self.verify("у связанной учётки кабинет работает",
+                    r.status_code == 200 and data.get("member_linked") is True,
+                    f"HTTP {r.status_code}, member_linked={data.get('member_linked')}")
+
+        # Учётка с ролью «член», но без связи с членом СНТ. Кабинет обязан
+        # сказать об этом прямо: раньше он показывал зелёное
+        # «Задолженности нет», то есть ровно противоположное правде.
+        from accounts.models import User as _User
+        from rest_framework_simplejwt.tokens import AccessToken as _Token
+
+        loose = _User.objects.create(
+            username="__check_unlinked__", organization=self._fixture_org,
+            role=_User.ROLE_MEMBER, member=None, is_active=True,
+        )
+        r = get("/api/payments/my-debt/",
+                {"HTTP_AUTHORIZATION": f"Bearer {_Token.for_user(loose)}"})
+        data = self._json(r) or {}
+        self.verify(
+            "непривязанная учётка не выдаётся за «долгов нет»",
+            r.status_code == 200 and data.get("member_linked") is False
+            and not data.get("charges"),
+            f"HTTP {r.status_code}, member_linked={data.get('member_linked')}",
+        )
+
         # ---------------- Оплата ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("ОПЛАТА"))
         self._check_payments(c, ME, CH)
