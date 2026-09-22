@@ -1,0 +1,1 @@
+import{t as e}from"./pinia-D_LTqlk8.js";import{H as t}from"./index-0E70XXUf.js";var n=t(({app:t})=>{t.use(e())});export{n as default};

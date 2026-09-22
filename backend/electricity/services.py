@@ -66,6 +66,16 @@ def _period_bounds(billing_period):
     from datetime import date
 
     year, month = billing_period.year, billing_period.month
+    if not month:
+        # Период без месяца — годовой: такие заводят под целевые взносы.
+        # Свет по нему считать нельзя: показания, тариф и потери
+        # помесячные, а окно в двенадцать месяцев дало бы одну разницу
+        # за год и одно «среднее» вместо двенадцати.
+        raise ValueError(
+            "Электроэнергия считается помесячно. "
+            f"У периода «{billing_period}» не указан месяц — "
+            "заведите месячный расчётный период."
+        )
     last_day = calendar.monthrange(year, month)[1]
     return date(year, month, 1), date(year, month, last_day)
 

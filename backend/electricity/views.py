@@ -53,11 +53,17 @@ class MeterViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
         except BillingPeriod.DoesNotExist:
             return Response({"detail": "Расчётный период не найден."}, status=404)
 
-        results = calculate_electricity(
-            org,
-            s.validated_data["period_date"],
-            billing_period,
-        )
+        try:
+            results = calculate_electricity(
+                org,
+                s.validated_data["period_date"],
+                billing_period,
+            )
+        except ValueError as exc:
+            # Нет тарифа, период без месяца и т.п. — это сообщение
+            # казначею, а не пятисотка с трейсбеком.
+            return Response({"detail": str(exc)},
+                            status=status.HTTP_400_BAD_REQUEST)
         return Response({
             "calculated": len(results),
             "details": [dataclasses.asdict(r) for r in results],

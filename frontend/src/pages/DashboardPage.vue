@@ -41,7 +41,7 @@
     </div>
 
     <!-- Личный кабинет члена -->
-    <div v-if="auth.isMember">
+    <div v-if="auth.isMember || auth.hasOwnCabinet">
       <q-card flat bordered class="q-mb-md">
         <q-card-section>
           <div class="text-subtitle1 text-weight-bold">
@@ -551,7 +551,7 @@ async function checkReturnedPayment() {
 }
 
 onMounted(async () => {
-  if (auth.isMember) {
+  if (auth.isMember || auth.hasOwnCabinet) {
     await checkReturnedPayment()
     await loadMyDebt()
   }

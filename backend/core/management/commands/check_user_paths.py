@@ -335,12 +335,38 @@ class Command(BaseCommand):
                     r.status_code == 200 and data.get("member_linked") is True,
                     f"HTTP {r.status_code}, member_linked={data.get('member_linked')}")
 
+        # Председатель, который сам владеет участком: кабинет обязан
+        # работать и у него. Раньше блок кабинета был закрыт по роли, и
+        # свои начисления председатель не видел вовсе.
+        from accounts.models import User as _User
+        from members.models import PlotOwnership as _Own
+        from rest_framework_simplejwt.tokens import AccessToken as _Token
+
+        own = _Own.objects.filter(
+            organization=self._fixture_org, date_to__isnull=True,
+        ).exclude(member=self._fixture_members[0]).first()
+        if own is not None:
+            boss = _User.objects.create(
+                username="__check_chair_member__",
+                organization=self._fixture_org,
+                role=_User.ROLE_CHAIRMAN, member=own.member, is_active=True,
+            )
+            hdr = {"HTTP_AUTHORIZATION": f"Bearer {_Token.for_user(boss)}"}
+            r = get("/api/me/", hdr)
+            me_data = self._json(r) or {}
+            r2 = get("/api/payments/my-debt/", hdr)
+            debt = self._json(r2) or {}
+            self.verify(
+                "председатель-собственник видит свой кабинет",
+                me_data.get("member_id") == own.member_id
+                and debt.get("member_linked") is True,
+                f"member_id={me_data.get('member_id')}, "
+                f"member_linked={debt.get('member_linked')}",
+            )
+
         # Учётка с ролью «член», но без связи с членом СНТ. Кабинет обязан
         # сказать об этом прямо: раньше он показывал зелёное
         # «Задолженности нет», то есть ровно противоположное правде.
-        from accounts.models import User as _User
-        from rest_framework_simplejwt.tokens import AccessToken as _Token
-
         loose = _User.objects.create(
             username="__check_unlinked__", organization=self._fixture_org,
             role=_User.ROLE_MEMBER, member=None, is_active=True,
@@ -720,6 +746,25 @@ class Command(BaseCommand):
             f"было {before_readings}, стало "
             f"{MeterReading.objects.filter(meter__organization=org).count()}",
         )
+
+        # 6a. Годовой период (без месяца) — понятная ошибка, а не 500.
+        #     Такие периоды заводят под целевые взносы, и расчёт света по
+        #     ним падал с TypeError внутри calendar.monthrange.
+        from electricity.services import calculate_electricity as _calc
+
+        bp_year = BillingPeriod.objects.create(
+            organization=org, year=2026, month=None,
+            status=BillingPeriod.STATUS_OPEN,
+        )
+        try:
+            _calc(org, date(2026, 1, 1), bp_year)
+            failed = "расчёт прошёл, хотя месяца у периода нет"
+        except ValueError as exc:
+            failed = None if "помесячно" in str(exc) else f"чужая ошибка: {exc}"
+        except Exception as exc:
+            failed = f"{type(exc).__name__}: {exc}"
+        self.verify("годовой период не ломает расчёт света",
+                    failed is None, failed or "")
 
         # 7. Показание, снятое в середине месяца, считается за месяц,
         #    даже если расчёт запустили с датой первого числа. Фронт

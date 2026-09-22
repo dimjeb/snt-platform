@@ -18,6 +18,10 @@ export const useAuthStore = defineStore('auth', {
     isChairman: (s) => s.user?.role === 'chairman' || s.user?.role === 'superadmin',
     isTreasurer: (s) => ['chairman', 'treasurer', 'superadmin'].includes(s.user?.role),
     isMember: (s) => s.user?.role === 'member',
+    // Председатель и казначей обычно тоже владеют участком, и свои
+    // начисления им нужно видеть так же, как всем. Личный кабинет
+    // положен не по роли, а по связи учётки с членом СНТ.
+    hasOwnCabinet: (s) => !!s.user?.member_id,
     isSuperAdmin: (s) => s.user?.role === 'superadmin',
     // Есть ли активный контекст организации
     hasOrg: (s) => !!(s.user?.organization || s.selectedOrgId),
