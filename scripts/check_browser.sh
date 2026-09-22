@@ -47,6 +47,20 @@ else
   run_pg() { env PATH="$PGBIN:$PATH" bash -c "$*"; }
 fi
 
+# Занятый порт — это чужой процесс, который ответит вместо нашего, и
+# проверка будет мерить не то. Реальный случай: забытый caddy с прошлого
+# запуска держал порт со старым конфигом без проксирования /api, и
+# браузер получал 502 при живом Django.
+for port in "$WEBPORT" "$APIPORT" "$PGPORT"; do
+  if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+    exec 3>&- 3<&-
+    echo "Порт $port уже занят — остановите тот процесс или задайте другой"
+    echo "порт через WEBPORT/APIPORT/PGPORT. Кто слушает:"
+    (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep ":$port " || true
+    exit 1
+  fi
+done
+
 WORK=$(mktemp -d)
 cleanup() {
   [[ -n "${API_PID:-}" ]] && kill "$API_PID" 2>/dev/null || true
