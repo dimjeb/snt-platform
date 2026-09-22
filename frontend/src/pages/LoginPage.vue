@@ -106,17 +106,49 @@ const features = [
   { icon: 'bar_chart',    text: 'Отчёты в Excel' },
 ]
 
+// Одно «Ошибка сервера. Попробуйте позже.» на все случаи, кроме 401,
+// скрывало и код ответа, и текст с сервера: по экрану нельзя было
+// отличить упавший бэкенд от недоступного сервера или от требования
+// сменить пароль. Разбираться приходилось по логам контейнера.
+function loginError(e) {
+  const status = e?.response?.status
+  const data = e?.response?.data
+
+  if (status === 401) return 'Неверный логин или пароль'
+  if (status === 403 && data?.must_change_password) {
+    return 'Нужно сменить временный пароль'
+  }
+  if (!e?.response) {
+    return 'Сервер не отвечает. Проверьте связь и попробуйте ещё раз.'
+  }
+  const detail = typeof data?.detail === 'string' ? data.detail : ''
+  return `Ошибка ${status}${detail ? ': ' + detail : ''}`
+}
+
 async function onLogin() {
   errorMsg.value = ''
   loading.value = true
   try {
     await auth.login(username.value, password.value)
-    await router.push('/dashboard')
   } catch (e) {
-    errorMsg.value =
-      e.response?.status === 401
-        ? 'Неверный логин или пароль'
-        : 'Ошибка сервера. Попробуйте позже.'
+    // Код ответа в консоль: он нужен, когда человек присылает скриншот.
+    console.error('Вход не удался:', e?.response?.status, e?.response?.data)
+    errorMsg.value = loginError(e)
+    loading.value = false
+    return
+  }
+
+  // Навигация — отдельно от входа. Раньше она стояла в том же try, и
+  // осечка перехода (например, редирект на смену пароля, отменяющий
+  // текущий переход) показывалась как «Ошибка сервера», хотя вход
+  // прошёл и токен уже получен.
+  try {
+    await router.push(auth.user?.must_change_password ? '/change-password' : '/dashboard')
+  } catch (e) {
+    console.error('Переход после входа не удался:', e)
+    window.location.assign(
+      auth.user?.must_change_password ? '/change-password' : '/dashboard'
+    )
   } finally {
     loading.value = false
   }
