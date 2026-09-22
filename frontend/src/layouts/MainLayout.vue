@@ -121,6 +121,11 @@
             <q-item-section>Показания счётчика</q-item-section>
           </q-item>
 
+          <q-item clickable v-ripple to="/help" class="snt-nav-item">
+            <q-item-section avatar><q-icon name="help_outline" /></q-item-section>
+            <q-item-section>Инструкция</q-item-section>
+          </q-item>
+
           <q-item clickable v-ripple to="/change-password" class="snt-nav-item">
             <q-item-section avatar><q-icon name="lock_reset" /></q-item-section>
             <q-item-section>Сменить пароль</q-item-section>

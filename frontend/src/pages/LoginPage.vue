@@ -76,7 +76,15 @@
         </q-card-section>
 
         <q-card-section class="text-center q-pt-sm">
-          <div class="text-caption text-grey-5">
+          <!-- Ссылка именно здесь, до входа: человеку с бумажкой, где
+               логин и временный пароль, чаще всего непонятно не как
+               нажать «Войти», а что делать дальше. -->
+          <q-btn
+            flat dense no-caps color="green-8" icon="help_outline"
+            label="Инструкция: как пользоваться сайтом"
+            to="/help"
+          />
+          <div class="text-caption text-grey-5 q-mt-sm">
             Забыли пароль? Обратитесь к председателю СНТ
           </div>
         </q-card-section>

@@ -77,6 +77,33 @@ with sync_playwright() as pw:
            f"символов {len(body_text(page))}")
     verify("на ней есть форма входа", page.locator("input").count() >= 2)
 
+    # 1a. Инструкция доступна до входа — со страницы логина.
+    #     Человеку с бумажкой чаще непонятно не как нажать «Войти», а что
+    #     делать дальше, поэтому ссылка обязана быть именно здесь.
+    link = page.get_by_role("link", name="Инструкция: как пользоваться сайтом")
+    verify("на странице входа есть ссылка на инструкцию", link.count() > 0)
+    if link.count():
+        link.first.click()
+        page.wait_for_url("**/help", timeout=15000)
+        page.wait_for_load_state("networkidle")
+        help_text = body_text(page)
+        verify("инструкция открывается без входа", len(help_text) > 2000,
+               f"символов {len(help_text)}")
+        verify("в ней есть истории «Хочу…»",
+               "Хочу узнать, сколько я должен" in help_text)
+        verify("есть раздел казначея", "Я казначей" in help_text)
+        verify("разметка отрисована, а не показан сырой текст",
+               "##" not in help_text and page.locator("h2").count() > 3,
+               f"заголовков h2: {page.locator('h2').count()}")
+        # Оглавление ссылается на «#я-садовод» — идентификаторы должны
+        # проставляться, иначе переходы из оглавления никуда не ведут.
+        verify("у заголовков есть якоря для оглавления",
+               page.locator("#я-садовод").count() > 0)
+        verify("предупреждения оформлены заметно",
+               page.locator("blockquote").count() > 5,
+               f"цитат: {page.locator('blockquote').count()}")
+        page.goto(f"{BASE}/login", wait_until="networkidle")
+
     # 2. Вход временным паролем уводит на смену пароля
     inputs = page.locator("input")
     inputs.nth(0).fill(LOGIN)
@@ -142,6 +169,9 @@ with sync_playwright() as pw:
     except Exception:
         shown = False
     verify("в кабинете виден долг", shown, body_text(page)[:150])
+
+    verify("в меню приложения есть пункт «Инструкция»",
+           "Инструкция" in text, "")
 
     # 5. Диалог оплаты по QR. Комиссию берёт банк плательщика, а не
     #    товарищество, и об этом должно быть сказано прямо в диалоге:
