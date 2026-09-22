@@ -140,6 +140,11 @@ def calculate_electricity(organization, period_date, billing_period) -> list[Plo
                     },
                 )
 
+    # После начисления за свет у заплативших вперёд появляется, во что
+    # зачесть аванс.
+    from billing.credits import spend_all_credits
+    spend_all_credits(organization)
+
     logger.info(
         "Electricity calculated for org=%s period=%s: %d plots, losses=%.3f кВт·ч",
         organization.id, billing_period, len(plot_results), losses,

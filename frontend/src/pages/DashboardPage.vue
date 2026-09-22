@@ -91,6 +91,15 @@
         </div>
       </div>
 
+      <!-- Аванс: деньги уже у товарищества, человек должен это видеть -->
+      <q-banner v-if="advance > 0" class="bg-blue-1 text-blue-10 q-mb-md" rounded>
+        <template #avatar>
+          <q-icon name="savings" color="blue-8" />
+        </template>
+        На вашем лицевом счёте аванс <b>{{ formatMoney(advance) }} ₽</b>.
+        Он зачтётся автоматически, когда появятся новые начисления.
+      </q-banner>
+
       <q-card flat bordered class="q-mb-md" v-if="myDebts.length">
         <q-card-section>
           <div class="row items-center q-mb-sm">
@@ -279,6 +288,9 @@
         <q-card-section class="text-center text-grey-6">
           <q-icon name="check_circle" color="positive" size="28px" />
           <div class="q-mt-xs">Задолженности нет</div>
+          <div v-if="advance > 0" class="q-mt-sm text-blue-9">
+            Аванс на лицевом счёте: <b>{{ formatMoney(advance) }} ₽</b>
+          </div>
         </q-card-section>
       </q-card>
     </div>
@@ -345,6 +357,7 @@ const myDebts = ref([])
 const myDebtTotal = ref(0)
 const electricityDebt = ref(0)
 const otherDebt = ref(0)
+const advance = ref(0)
 const meters = ref([])
 const onlineAvailable = ref(false)
 const debtsLoaded = ref(false)
@@ -452,6 +465,7 @@ async function loadMyDebt() {
     myDebtTotal.value = Number(data.total_debt || 0)
     electricityDebt.value = Number(data.electricity_debt || 0)
     otherDebt.value = Number(data.other_debt || 0)
+    advance.value = Number(data.advance || 0)
     meters.value = data.meters || []
     onlineAvailable.value = !!data.online_available
     // По умолчанию предлагаем заплатить всё: частичная оплата — это

@@ -271,3 +271,51 @@ class BankTransaction(OrgModel):
 
     def __str__(self):
         return f"{self.date} {self.amount} ₽ от {self.payer_name or 'неизвестно'}"
+
+
+class PlotCredit(OrgModel):
+    """
+    Движение аванса по участку.
+
+    Хранится не одним числом «остаток», а лентой движений: плюс —
+    поступили деньги сверх начислений, минус — аванс пошёл на погашение
+    нового начисления. Остаток всегда равен сумме ленты.
+
+    Так сделано потому, что аванс — это чужие деньги на счёте
+    товарищества. На вопрос «откуда у меня 3000 рублей аванса и куда они
+    делись» одно поле с остатком ответить не может, а лента отвечает
+    построчно, с датами и ссылками на начисления.
+    """
+
+    plot = models.ForeignKey(
+        "members.Plot", on_delete=models.CASCADE, related_name="credits",
+        verbose_name="Участок",
+    )
+    date = models.DateField("Дата")
+    amount = models.DecimalField(
+        "Сумма", max_digits=12, decimal_places=2,
+        help_text="Положительная — аванс зачислен, отрицательная — израсходован.",
+    )
+    transaction = models.ForeignKey(
+        "billing.BankTransaction", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="credits", verbose_name="Строка выписки",
+    )
+    charge = models.ForeignKey(
+        Charge, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="credit_entries", verbose_name="Начисление",
+    )
+    payment = models.ForeignKey(
+        Payment, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="credit_entries", verbose_name="Платёж",
+    )
+    notes = models.CharField("Комментарий", max_length=255, blank=True)
+
+    class Meta:
+        verbose_name = "Движение аванса"
+        verbose_name_plural = "Авансы"
+        ordering = ["-date", "-pk"]
+        indexes = [models.Index(fields=["organization", "plot"])]
+
+    def __str__(self):
+        sign = "+" if self.amount >= 0 else ""
+        return f"{self.plot} {self.date}: {sign}{self.amount} ₽"

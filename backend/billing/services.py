@@ -3,6 +3,7 @@
 """
 from decimal import Decimal
 from django.db import transaction
+from .credits import spend_all_credits
 from .models import BillingPeriod, Charge, ChargeType
 from members.models import Plot
 
@@ -41,6 +42,10 @@ def create_membership_charges(period: BillingPeriod, amount: Decimal, descriptio
 
     with transaction.atomic():
         Charge.objects.bulk_create(charges)
+        # Именно сейчас у заплативших вперёд появилось, во что зачесть
+        # аванс. Если этого не сделать, человек увидит долг при том, что
+        # деньги товарищество уже получило.
+        spend_all_credits(org)
 
     return len(charges)
 
@@ -74,6 +79,10 @@ def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
 
     with transaction.atomic():
         Charge.objects.bulk_create(charges)
+        # Именно сейчас у заплативших вперёд появилось, во что зачесть
+        # аванс. Если этого не сделать, человек увидит долг при том, что
+        # деньги товарищество уже получило.
+        spend_all_credits(org)
 
     return len(charges)
 

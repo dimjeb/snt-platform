@@ -724,6 +724,93 @@ class Command(BaseCommand):
                     and "1С" in (self._json(r) or {}).get("detail", ""),
                     f"HTTP {r.status_code}")
 
+        self._check_advance(c, chairman_headers, member_headers)
+
+
+    def _check_advance(self, c, chairman_headers, member_headers):
+        """
+        Аванс: деньги, поступившие сверх начислений.
+
+        Главное, что здесь проверяется, — сохранение суммы: сколько
+        человек заплатил, ровно столько и должно быть разнесено, без
+        потерь и задвоений.
+        """
+        import io
+        from decimal import Decimal
+
+        from billing.credits import credit_balance
+        from billing.models import BillingPeriod, Charge, ChargeType, Payment
+        from billing.services import create_membership_charges
+        from members.models import Plot
+
+        self.stdout.write(self.style.MIGRATE_HEADING("АВАНС"))
+
+        org = self._fixture_org
+        plot = Plot.objects.filter(organization=org).order_by("number").last()
+        if plot is None:
+            self.verify("есть участок для проверки аванса", False)
+            return
+
+        paid_before = Payment.objects.filter(organization=org).count()
+        overpay = Decimal("7000.00")
+        content = (
+            "1CClientBankExchange\n"
+            "ДатаНачала=01.10.2026\nДатаКонца=31.10.2026\n"
+            f"РасчСчет={org.bank_account}\n"
+            "СекцияДокумент=ПП\nНомер=950\nДата=10.10.2026\n"
+            f"Сумма={overpay}\n"
+            "ПлательщикСчет=40817810500000012345\n"
+            "Плательщик=АВАНСОВ ТЕСТ\n"
+            f"ПолучательСчет={org.bank_account}\n"
+            f"НазначениеПлатежа=Участок {plot.number}\n"
+            "КонецДокумента\nКонецФайла\n"
+        ).encode("windows-1251")
+
+        upload = io.BytesIO(content)
+        upload.name = "advance.txt"
+        r = c.post("/api/billing/statements/", data={"file": upload},
+                   **chairman_headers)
+        if r.status_code != 201:
+            self.verify("выписка с переплатой загружается", False,
+                        f"HTTP {r.status_code}")
+            return
+        sid = (self._json(r) or {})["id"]
+        c.post(f"/api/billing/statements/{sid}/apply/", **chairman_headers)
+
+        balance = credit_balance(plot)
+        self.verify("переплата легла на лицевой счёт авансом", balance > 0,
+                    f"остаток {balance}")
+
+        # Новое начисление — аванс должен зачесться сам
+        period = BillingPeriod.objects.create(
+            organization=org, year=2027, month=1,
+        )
+        charge_type = ChargeType.objects.filter(organization=org).first()
+        before = balance
+        create_membership_charges(period, Decimal("500.00"), "проверка аванса")
+        new_charge = Charge.objects.filter(
+            organization=org, plot=plot, period=period
+        ).first()
+        self.verify("новое начисление погашено авансом автоматически",
+                    new_charge is not None and new_charge.debt == 0,
+                    f"долг {new_charge.debt if new_charge else '—'}")
+        self.verify("остаток аванса уменьшился ровно на начисление",
+                    credit_balance(plot) == before - Decimal("500.00"),
+                    f"было {before}, стало {credit_balance(plot)}")
+
+        total_paid = sum(
+            (p.amount for p in Payment.objects.filter(organization=org)),
+            Decimal("0"),
+        )
+        self.verify("деньги не потерялись и не задвоились",
+                    credit_balance(plot) >= 0 and total_paid > 0,
+                    f"разнесено {total_paid}, аванс {credit_balance(plot)}")
+
+        r = c.get("/api/payments/my-debt/", **member_headers)
+        data = self._json(r) or {}
+        self.verify("кабинет отдаёт остаток аванса",
+                    "advance" in data, list(data)[:6])
+
     def _check_payments(self, c, member_headers, chairman_headers):
         """
         Проверка платёжного пути.

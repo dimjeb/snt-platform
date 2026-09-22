@@ -115,6 +115,7 @@ class MyDebtView(APIView):
     permission_classes = [IsOrgMember]
 
     def get(self, request):
+        member = getattr(request.user, "member", None)
         charges = list(_member_charges(request))
         allocation = build_debt_allocation(charges)
 
@@ -156,10 +157,20 @@ class MyDebtView(APIView):
                 "tariff": charge.tariff,
             })
 
+        # Аванс: деньги, которые человек уже заплатил вперёд. Показать
+        # их обязательно — иначе он видит долг при том, что деньги
+        # товарищество получило, и идёт разбираться к казначею.
+        from billing.credits import credit_balance
+
+        advance = sum(
+            (credit_balance(plot) for plot in member.plots), Decimal("0")
+        ) if member else Decimal("0")
+
         return Response({
             "total_debt": electricity_debt + other_debt,
             "electricity_debt": electricity_debt,
             "other_debt": other_debt,
+            "advance": advance,
             "charges": rows,
             "meters": _member_meters(request),
             "online_available": online_available,

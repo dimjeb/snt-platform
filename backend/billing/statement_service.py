@@ -17,6 +17,7 @@ from decimal import Decimal
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from .credits import add_credit
 from .matching import MATCH_NONE, MATCH_PLOT, match_documents
 from .models import BankStatement, BankTransaction, Charge, Payment
 from .statement import parse_1c_statement
@@ -144,15 +145,22 @@ def apply_statement(statement, *, user=None):
 
             row.status = BankTransaction.STATUS_APPLIED
             if remaining > 0:
-                # Заплатили больше, чем начислено. Деньги на счёте есть,
-                # а закрывать нечего — пусть казначей решит, аванс это
-                # или ошибка.
-                row.note = (
-                    f"Не разнесено {remaining} ₽ — начислений не хватило. "
-                    f"Возможно, аванс."
+                # Заплатили больше, чем начислено — обычное дело, когда
+                # платят вперёд за сезон. Кладём остаток на лицевой счёт
+                # участка: он зачтётся сам, как только появятся новые
+                # начисления. Просто оставить деньги «нигде» нельзя —
+                # они чужие.
+                add_credit(
+                    row.plot, amount=remaining, date=row.date,
+                    organization=statement.organization,
+                    transaction_row=row,
+                    notes=f"Переплата по выписке {statement.file_name}",
                 )
-                log.warning(
-                    "Выписка %s: по участку %s не разнесено %s ₽",
+                row.note = (
+                    f"{remaining} ₽ зачислено авансом — начислений не хватило."
+                )
+                log.info(
+                    "Выписка %s: по участку %s зачислено авансом %s ₽",
                     statement.pk, row.plot.number, remaining,
                 )
             row.save(update_fields=["status", "note", "updated_at"])
