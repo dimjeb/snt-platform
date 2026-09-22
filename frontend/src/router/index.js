@@ -100,5 +100,22 @@ export default defineRouter(function ({ store }) {
     return true
   })
 
+  // Страницы грузятся по требованию, отдельными файлами с хешем в имени.
+  // Если вкладка открыта со старого index.html, а на сервере уже новая
+  // сборка, такого файла на диске нет — импорт падает, и пользователь
+  // видит белый экран. Единственное верное лечение — перезагрузить
+  // документ целиком: тогда придёт свежий index.html с новыми именами.
+  router.onError((error, to) => {
+    const message = String(error?.message || '')
+    const chunkGone = (
+      message.includes('Failed to fetch dynamically imported module')
+      || message.includes('Importing a module script failed')
+      || message.includes('error loading dynamically imported module')
+    )
+    if (chunkGone && to?.fullPath) {
+      window.location.assign(to.fullPath)
+    }
+  })
+
   return router
 })
