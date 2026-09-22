@@ -99,11 +99,30 @@ from accounts.models import User
 from members.models import Member, Plot, PlotOwnership
 from organizations.models import Organization
 
-org = Organization.objects.create(name="Проверка отрисовки", is_active=True)
+# Реквизиты настоящие только по структуре: контрольные ключи сходятся,
+# иначе модель их не примет. Без них платёжный QR не построится.
+org = Organization.objects.create(
+    name="Проверка отрисовки", is_active=True,
+    full_name="ТОВАРИЩЕСТВО ПРОВЕРКА", inn="3821004723", kpp="381101001",
+    bank_account="40703810100810020382", bank_name="ФИЛИАЛ ПРОВЕРОЧНЫЙ",
+    bank_bic="044525411", bank_corr_account="30101810145250000411",
+)
 m = Member.objects.create(organization=org, last_name="Проверкин", first_name="Тест")
 p = Plot.objects.create(organization=org, number="1", area_sotok="6.00")
 PlotOwnership.objects.create(organization=org, plot=p, member=m,
                              date_from=date(2024, 1, 1))
+
+# Долг, чтобы в кабинете было что оплачивать и открылся диалог QR.
+from billing.models import BillingPeriod, Charge, ChargeType
+
+period = BillingPeriod.objects.create(
+    organization=org, year=2026, month=9, status=BillingPeriod.STATUS_OPEN,
+)
+ctype = ChargeType.objects.create(
+    organization=org, name="Целевой взнос", category=ChargeType.TYPE_TARGET,
+)
+Charge.objects.create(organization=org, period=period, plot=p,
+                      charge_type=ctype, amount="15.00")
 u = User(username=os.environ["SMOKE_LOGIN"], organization=org, member=m,
          role=User.ROLE_MEMBER, is_active=True, must_change_password=True)
 u.set_password(os.environ["SMOKE_PASSWORD"])

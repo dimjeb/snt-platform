@@ -112,6 +112,51 @@ with sync_playwright() as pw:
     verify("прямой заход на /change-password не даёт белый экран",
            "Смена пароля" in text, f"символов {len(text)}")
 
+    # 4. Сама смена пароля проходит и пускает в кабинет
+    new_password = PASSWORD + "-Xq7"
+    fields = page.locator("input")
+    fields.nth(0).fill(PASSWORD)
+    fields.nth(1).fill(new_password)
+    fields.nth(2).fill(new_password)
+    page.get_by_role("button", name="Сохранить").click()
+    try:
+        page.wait_for_url("**/dashboard", timeout=15000)
+    except Exception:
+        print("    URL сейчас:", page.url)
+        print("    текст:", body_text(page)[:200].replace("\n", " | "))
+        raise
+    page.wait_for_load_state("networkidle")
+
+    text = body_text(page)
+    verify("после смены пароля открывается кабинет", len(text) > 40,
+           f"символов {len(text)}")
+
+    # Долг приезжает отдельным запросом уже после загрузки страницы:
+    # networkidle его не дожидается, и читать текст сразу — значит
+    # мерить полупустой экран.
+    try:
+        page.wait_for_function(
+            "() => document.body.innerText.includes('15')", timeout=10000,
+        )
+        shown = True
+    except Exception:
+        shown = False
+    verify("в кабинете виден долг", shown, body_text(page)[:150])
+
+    # 5. Диалог оплаты по QR. Комиссию берёт банк плательщика, а не
+    #    товарищество, и об этом должно быть сказано прямо в диалоге:
+    #    человек, впервые увидевший её при оплате, идёт звонить казначею.
+    page.get_by_role("button", name="Оплатить по QR из банка").click()
+    page.wait_for_timeout(2500)
+    dialog = body_text(page)
+    verify("диалог QR открывается", "Оплата по QR" in dialog)
+    verify("в диалоге есть сам QR", page.locator("img[alt*='QR']").count() > 0)
+    verify("сказано, что комиссию может взять банк",
+           "комисси" in dialog.lower(),
+           "" if "комисси" in dialog.lower() else dialog[:200])
+    verify("сказано, что она не относится к товариществу",
+           "не относится к товариществу" in dialog)
+
     # 4. Ошибки в консоли — именно так белый экран себя и проявлял
     layout_errors = [e for e in errors if "QPage" in e or "QLayout" in e]
     verify("нет жалоб Quasar на layout", not layout_errors,
