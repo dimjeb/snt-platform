@@ -296,6 +296,8 @@ class Command(BaseCommand):
 
         self._check_payment_qr(c, ME)
 
+        self._check_bank_statement(c, CH, ME)
+
         # ---------------- Казначей ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("КАЗНАЧЕЙ"))
         r = get("/api/members/?page_size=1", TR)
@@ -596,6 +598,131 @@ class Command(BaseCommand):
         decoded_small, _, _ = cv2.QRCodeDetector().detectAndDecode(small)
         self.verify("читается и в размере экрана телефона (280 px)",
                     decoded_small == payload)
+
+    def _check_bank_statement(self, c, chairman_headers, member_headers):
+        """
+        Разбор банковской выписки и разнесение платежей.
+
+        Самое важное здесь — что неопознанная строка НЕ проводится:
+        зачислить деньги наугад значит закрыть чужой долг чужими
+        деньгами, и обнаружится это через месяцы.
+        """
+        import io
+
+        from billing.models import BankTransaction, Charge, Payment
+        from members.models import Plot
+
+        self.stdout.write(self.style.MIGRATE_HEADING("БАНКОВСКАЯ ВЫПИСКА"))
+
+        org = self._fixture_org
+        plot = Plot.objects.filter(organization=org).order_by("number").first()
+        charge = Charge.objects.filter(organization=org, plot=plot).first()
+        if not (plot and charge):
+            self.verify("есть участок с начислением для проверки", False)
+            return
+        debt_before = charge.debt
+
+        content = (
+            "1CClientBankExchange\n"
+            "ВерсияФормата=1.03\n"
+            "Кодировка=Windows\n"
+            "ДатаНачала=01.09.2026\n"
+            "ДатаКонца=30.09.2026\n"
+            f"РасчСчет={org.bank_account}\n"
+            "СекцияДокумент=Платежное поручение\n"
+            "Номер=901\n"
+            "Дата=15.09.2026\n"
+            f"Сумма={debt_before}\n"
+            "ПлательщикСчет=40817810500000012345\n"
+            "Плательщик=ТЕСТОВ ТЕСТ ТЕСТОВИЧ\n"
+            f"ПолучательСчет={org.bank_account}\n"
+            f"НазначениеПлатежа=Участок {plot.number}\n"
+            "КонецДокумента\n"
+            "СекцияДокумент=Платежное поручение\n"
+            "Номер=902\n"
+            "Дата=16.09.2026\n"
+            "Сумма=777.00\n"
+            "ПлательщикСчет=40817810500000099999\n"
+            "Плательщик=НЕИЗВЕСТНЫЙ ЧЕЛОВЕК ТАКОЙТО\n"
+            f"ПолучательСчет={org.bank_account}\n"
+            "НазначениеПлатежа=перевод средств\n"
+            "КонецДокумента\n"
+            "СекцияДокумент=Платежное поручение\n"
+            "Номер=903\n"
+            "Дата=17.09.2026\n"
+            "Сумма=5000.00\n"
+            f"ПлательщикСчет={org.bank_account}\n"
+            "ПолучательСчет=40702810900000055555\n"
+            "НазначениеПлатежа=оплата подрядчику\n"
+            "КонецДокумента\n"
+            "КонецФайла\n"
+        ).encode("windows-1251")
+
+        upload = io.BytesIO(content)
+        upload.name = "kl_to_1c.txt"
+        r = c.post("/api/billing/statements/", data={"file": upload},
+                   **chairman_headers)
+        data = self._json(r) or {}
+        self.verify("выписка в windows-1251 разбирается",
+                    r.status_code == 201, f"HTTP {r.status_code}")
+        if r.status_code != 201:
+            return
+
+        # Исходящий платёж подрядчику попадать в разбор не должен.
+        self.verify("загружены только поступления",
+                    data.get("stats", {}).get("loaded") == 2,
+                    f"загружено {data.get('stats', {}).get('loaded')}")
+        summary = data.get("summary") or {}
+        self.verify("платёж с номером участка опознан",
+                    summary.get("by_plot") == 1, summary.get("by_plot"))
+        self.verify("платёж без опознания помечен",
+                    summary.get("unmatched") == 1, summary.get("unmatched"))
+
+        self.verify("до проведения платежей не создано",
+                    not Payment.objects.filter(
+                        organization=org, external_ref="901").exists())
+
+        sid = data["id"]
+        r = c.post(f"/api/billing/statements/{sid}/apply/", **chairman_headers)
+        result = self._json(r) or {}
+        self.verify("выписка проводится", r.status_code == 200,
+                    f"HTTP {r.status_code}")
+        self.verify("неопознанная строка НЕ проведена",
+                    result.get("skipped") == 1, result.get("skipped"))
+
+        charge.refresh_from_db()
+        self.verify("долг закрыт ровно на сумму платежа",
+                    charge.debt == 0, f"было {debt_before}, стало {charge.debt}")
+        self.verify("платёж записан как банковский перевод",
+                    Payment.objects.filter(organization=org, external_ref="901",
+                                           method="bank").exists())
+
+        # Повторная загрузка того же файла
+        again = io.BytesIO(content)
+        again.name = "kl_to_1c.txt"
+        r = c.post("/api/billing/statements/", data={"file": again},
+                   **chairman_headers)
+        stats = (self._json(r) or {}).get("stats", {})
+        self.verify("повторная загрузка не задваивает платежи",
+                    stats.get("loaded") == 0 and stats.get("duplicates") == 2,
+                    f"загружено {stats.get('loaded')}, дублей {stats.get('duplicates')}")
+
+        r = c.post(f"/api/billing/statements/{sid}/apply/", **chairman_headers)
+        self.verify("повторное проведение отклоняется", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+
+        r = c.get("/api/billing/statements/", **member_headers)
+        self.verify("рядовой член к выпискам не допущен",
+                    r.status_code == 403, f"HTTP {r.status_code}")
+
+        bad = io.BytesIO(b"just some text, not a statement")
+        bad.name = "notes.txt"
+        r = c.post("/api/billing/statements/", data={"file": bad},
+                   **chairman_headers)
+        self.verify("посторонний файл отвергается с понятным сообщением",
+                    r.status_code == 400
+                    and "1С" in (self._json(r) or {}).get("detail", ""),
+                    f"HTTP {r.status_code}")
 
     def _check_payments(self, c, member_headers, chairman_headers):
         """

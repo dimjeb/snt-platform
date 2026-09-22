@@ -47,6 +47,11 @@ const routes = [
         component: () => import('pages/MeterReadingPage.vue'),
       },
       {
+        path: 'statements',
+        component: () => import('pages/StatementPage.vue'),
+        meta: { roles: ['chairman', 'treasurer', 'superadmin'] },
+      },
+      {
         path: 'reports',
         component: () => import('pages/ReportsPage.vue'),
         meta: { roles: ['chairman', 'treasurer', 'superadmin'] },

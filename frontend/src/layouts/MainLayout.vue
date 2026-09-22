@@ -103,6 +103,11 @@
               <q-item-section>Электроэнергия</q-item-section>
             </q-item>
 
+            <q-item clickable v-ripple to="/statements" class="snt-nav-item">
+              <q-item-section avatar><q-icon name="account_balance" /></q-item-section>
+              <q-item-section>Банковская выписка</q-item-section>
+            </q-item>
+
             <q-item clickable v-ripple to="/reports" class="snt-nav-item">
               <q-item-section avatar><q-icon name="bar_chart" /></q-item-section>
               <q-item-section>Отчёты</q-item-section>

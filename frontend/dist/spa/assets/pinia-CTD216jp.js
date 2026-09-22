@@ -1,0 +1,1 @@
+import{it as e,st as t}from"./index-BiTERIVQ.js";var n=t(({app:t})=>{t.use(e())});export{n as default};
