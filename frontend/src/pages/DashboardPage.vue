@@ -171,6 +171,16 @@
           <div v-else class="text-caption text-grey-6 q-mt-sm">
             Онлайн-оплата в этом СНТ не подключена — обратитесь к казначею.
           </div>
+          <q-btn
+            color="blue-8"
+            icon="qr_code_2"
+            label="Оплатить по QR из банка"
+            class="full-width q-mt-sm"
+            outline
+            :disable="!payValid"
+            @click="openQr"
+          />
+
           <div class="text-caption text-grey-6 q-mt-sm">
             Суммы можно уменьшить или обнулить — заплатите столько, сколько
             готовы сейчас.
@@ -178,6 +188,92 @@
         </q-card-section>
       </q-card>
 
+
+      <!-- Оплата переводом: работает без эквайринга и без кассы -->
+      <q-dialog v-model="qrDialog">
+        <q-card style="min-width: 320px; max-width: 420px">
+          <q-card-section class="bg-blue-8 text-white">
+            <div class="text-h6">Оплата по QR</div>
+            <div class="text-caption">
+              Откройте приложение своего банка и наведите камеру
+            </div>
+          </q-card-section>
+
+          <q-card-section class="text-center q-pb-none" v-if="qrUrl">
+            <img
+              :src="qrUrl"
+              alt="QR-код для оплаты"
+              style="width: 100%; max-width: 320px; image-rendering: pixelated"
+            />
+            <div class="text-h6 text-weight-bold q-mt-sm">
+              {{ formatMoney(qrAmount) }} ₽
+            </div>
+          </q-card-section>
+
+          <q-card-section v-if="qrError" class="text-negative text-body2">
+            {{ qrError }}
+          </q-card-section>
+
+          <q-card-section v-if="qrRequisites">
+            <div class="text-caption text-grey-7 q-mb-xs">
+              Если сканер не сработал — реквизиты для перевода вручную:
+            </div>
+            <q-list dense class="text-caption">
+              <q-item dense class="q-px-none">
+                <q-item-section>
+                  <q-item-label overline>Получатель</q-item-label>
+                  <q-item-label>{{ qrRequisites.name }}</q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item dense class="q-px-none">
+                <q-item-section>
+                  <q-item-label overline>Счёт</q-item-label>
+                  <q-item-label>{{ qrRequisites.account }}</q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item dense class="q-px-none">
+                <q-item-section>
+                  <q-item-label overline>Банк</q-item-label>
+                  <q-item-label>{{ qrRequisites.bank }}, БИК {{ qrRequisites.bic }}</q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item dense class="q-px-none">
+                <q-item-section>
+                  <q-item-label overline>Корр. счёт</q-item-label>
+                  <q-item-label>{{ qrRequisites.corr_account }}</q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item dense class="q-px-none">
+                <q-item-section>
+                  <q-item-label overline>ИНН / КПП</q-item-label>
+                  <q-item-label>{{ qrRequisites.inn }} / {{ qrRequisites.kpp }}</q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-item dense class="q-px-none">
+                <q-item-section>
+                  <q-item-label overline>Назначение платежа</q-item-label>
+                  <q-item-label>{{ qrPurpose }}</q-item-label>
+                </q-item-section>
+              </q-item>
+            </q-list>
+            <!-- Без номера участка казначей не опознает платёж в выписке -->
+            <div class="text-caption text-orange-9 q-mt-sm">
+              Обязательно сохраните назначение платежа с номером участка —
+              по нему казначей найдёт ваш перевод.
+            </div>
+          </q-card-section>
+
+          <q-card-section class="text-caption text-grey-6 q-pt-none">
+            Деньги идут напрямую на счёт товарищества. В кабинете
+            задолженность обновится после того, как казначей проведёт
+            поступление по выписке — обычно в течение нескольких дней.
+          </q-card-section>
+
+          <q-card-actions align="right">
+            <q-btn flat label="Закрыть" v-close-popup />
+          </q-card-actions>
+        </q-card>
+      </q-dialog>
 
       <q-card flat bordered class="q-mb-md" v-if="!myDebts.length && debtsLoaded">
         <q-card-section class="text-center text-grey-6">
@@ -257,6 +353,13 @@ const payResult = ref(null)
 // Сколько платить за каждое начисление: { [charge_id]: строка из поля }
 const payInputs = ref({})
 
+const qrDialog = ref(false)
+const qrUrl = ref('')
+const qrAmount = ref(0)
+const qrPurpose = ref('')
+const qrRequisites = ref(null)
+const qrError = ref('')
+
 function formatMoney(val) {
   if (!val) return '0'
   return Number(val).toLocaleString('ru-RU', { maximumFractionDigits: 0 })
@@ -308,6 +411,32 @@ function fillAll() {
   const next = {}
   for (const d of myDebts.value) next[d.id] = String(d.debt)
   payInputs.value = next
+}
+
+async function openQr() {
+  qrError.value = ''
+  qrUrl.value = ''
+  qrRequisites.value = null
+  qrAmount.value = payTotal.value
+  qrDialog.value = true
+  try {
+    const { data } = await api.get('/payments/qr/', {
+      params: { amount: payTotal.value },
+    })
+    qrPurpose.value = data.purpose
+    qrRequisites.value = data.requisites
+    // Картинку забираем тем же axios-клиентом: эндпоинт требует токен,
+    // а подставить его в <img src> напрямую нельзя.
+    const img = await api.get('/payments/qr.png', {
+      params: { amount: payTotal.value },
+      responseType: 'blob',
+    })
+    qrUrl.value = URL.createObjectURL(img.data)
+  } catch (e) {
+    qrError.value =
+      e.response?.data?.detail ||
+      'Не удалось построить QR. Возможно, не заполнены банковские реквизиты товарищества.'
+  }
 }
 
 function clearAll() {

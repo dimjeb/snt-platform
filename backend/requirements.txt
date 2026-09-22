@@ -22,6 +22,7 @@ openpyxl==3.1.5
 
 # Images / files
 Pillow==11.0.0
+qrcode==8.0          # платёжный QR по ГОСТ Р 56042-2014
 
 # Server
 gunicorn==23.0.0

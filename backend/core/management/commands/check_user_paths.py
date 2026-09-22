@@ -138,8 +138,16 @@ class Command(BaseCommand):
         from members.models import Member, Plot, PlotOwnership
         from organizations.models import Organization
 
+        # Реквизиты настоящие только по структуре: контрольные ключи
+        # сходятся, иначе модель их не примет. Счёт вымышленный.
         org = Organization.objects.create(
             name="Проверка развёртывания", is_active=True,
+            full_name="ТОВАРИЩЕСТВО ПРОВЕРКА РАЗВЁРТЫВАНИЯ",
+            inn="3821004723", kpp="381101001",
+            bank_account="40703810100810020382",
+            bank_name="ФИЛИАЛ ПРОВЕРОЧНЫЙ",
+            bank_bic="044525411",
+            bank_corr_account="30101810145250000411",
         )
 
         # Три члена: проверкам нужен и page_size=3, и второй собственник
@@ -285,6 +293,8 @@ class Command(BaseCommand):
         self._check_audit(c, CH)
 
         self._check_forced_password(c)
+
+        self._check_payment_qr(c, ME)
 
         # ---------------- Казначей ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("КАЗНАЧЕЙ"))
@@ -518,6 +528,74 @@ class Command(BaseCommand):
                    content_type="application/json")
         self.verify("временный пароль перестаёт действовать", r.status_code == 401,
                     f"HTTP {r.status_code}")
+
+    def _check_payment_qr(self, c, member_headers):
+        """
+        Платёжный QR по ГОСТ — оплата переводом, без эквайринга.
+
+        Проверяем не только что строка собралась, но и что она читается
+        обратно из картинки: сгенерировать нечитаемый QR очень легко, а
+        заметит это уже член СНТ с телефоном в руках.
+        """
+        self.stdout.write(self.style.MIGRATE_HEADING("ПЛАТЁЖНЫЙ QR"))
+
+        r = c.get("/api/payments/qr/?amount=1000", **member_headers)
+        data = self._json(r) or {}
+        payload = data.get("payload") or ""
+        self.verify("QR-строка отдаётся", r.status_code == 200 and bool(payload),
+                    f"HTTP {r.status_code}")
+        if not payload:
+            return
+
+        fields = dict(
+            part.split("=", 1) for part in payload.split("|")[1:] if "=" in part
+        )
+        self.verify("формат и порядок обязательных полей по ГОСТ",
+                    payload.startswith("ST00012|")
+                    and [p.split("=")[0] for p in payload.split("|")[1:6]]
+                    == ["Name", "PersonalAcc", "BankName", "BIC", "CorrespAcc"])
+        self.verify("сумма в копейках", fields.get("Sum") == "100000",
+                    fields.get("Sum"))
+        self.verify("в назначении есть номер участка",
+                    bool(fields.get("Purpose")) and any(
+                        ch.isdigit() for ch in fields["Purpose"]
+                    ), fields.get("Purpose"))
+        self.verify("лицевой счёт заполнен номером участка",
+                    bool(fields.get("PersAcc")), fields.get("PersAcc"))
+
+        r = c.get("/api/payments/qr/?amount=999999999", **member_headers)
+        self.verify("сумма больше долга в QR не попадает",
+                    r.status_code == 400, f"HTTP {r.status_code}")
+
+        r = c.get("/api/payments/qr.png?amount=1000", **member_headers)
+        png = r.content if r.status_code == 200 else b""
+        self.verify("картинка отдаётся",
+                    r["Content-Type"] == "image/png"
+                    and png[:8] == b"\x89PNG\r\n\x1a\n",
+                    f"HTTP {r.status_code}, {len(png)} байт")
+        self.verify("картинка не кешируется",
+                    "no-store" in r.get("Cache-Control", ""),
+                    r.get("Cache-Control"))
+
+        # Обратное чтение — если opencv нет, честно пропускаем, а не
+        # делаем вид, что проверили.
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            self.stdout.write(
+                "  … обратное чтение QR пропущено: нет opencv"
+            )
+            return
+        img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_GRAYSCALE)
+        decoded, _, _ = cv2.QRCodeDetector().detectAndDecode(img)
+        self.verify("QR читается обратно и совпадает со строкой",
+                    decoded == payload,
+                    f"прочитано {len(decoded)} симв. из {len(payload)}")
+        small = cv2.resize(img, (280, 280), interpolation=cv2.INTER_AREA)
+        decoded_small, _, _ = cv2.QRCodeDetector().detectAndDecode(small)
+        self.verify("читается и в размере экрана телефона (280 px)",
+                    decoded_small == payload)
 
     def _check_payments(self, c, member_headers, chairman_headers):
         """

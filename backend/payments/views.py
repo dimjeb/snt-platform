@@ -7,9 +7,10 @@ HTTP-слой платежей.
 """
 import logging
 import uuid
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
+from django.http import HttpResponse
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status, viewsets
@@ -19,9 +20,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from billing.models import Charge, ChargeType
+from core.audit import record_access
+from core.models import AccessLog
 from core.permissions import IsOrgMember, IsTreasurer, OrgQuerysetMixin
 
 from .drivers import ProviderError, WebhookAuthError, get_driver
+from .qr import QRError, build_payment_payload, build_purpose, render_png
 from .models import ObligatoryPayment, PaymentIntent, PaymentProvider
 from .serializers import (
     ObligatoryPaymentSerializer,
@@ -164,6 +168,112 @@ class MyDebtView(APIView):
                 if online_available else None
             ),
         })
+
+
+class MyPaymentQRView(APIView):
+    """
+    Платёжный QR по ГОСТ для оплаты переводом на счёт товарищества.
+
+    Нужен там, где эквайринга нет: человек сканирует код в приложении
+    своего банка, реквизиты и сумма подставляются сами. Товарищество
+    за это не платит ничего — это обычный перевод, а не эквайринг.
+    """
+
+    permission_classes = [IsOrgMember]
+
+    def get(self, request):
+        member = getattr(request.user, "member", None)
+        if member is None:
+            return Response(
+                {"detail": "Учётная запись не связана с членом СНТ."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        raw_amount = request.query_params.get("amount")
+        amount = None
+        if raw_amount:
+            try:
+                amount = Decimal(str(raw_amount))
+            except (InvalidOperation, ValueError):
+                return Response({"detail": "Сумма указана неверно."},
+                                status=status.HTTP_400_BAD_REQUEST)
+            charges = list(_member_charges(request))
+            total = sum((c.debt for c in charges), Decimal("0"))
+            if amount > total:
+                return Response(
+                    {"detail": f"Сумма больше задолженности: "
+                               f"к оплате доступно {total} ₽."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        plot_numbers = [plot.number for plot in member.plots]
+        purpose = build_purpose(request.org, plot_numbers=plot_numbers)
+
+        try:
+            payload = build_payment_payload(
+                request.org,
+                amount=amount,
+                purpose=purpose,
+                pers_acc=plot_numbers[0] if plot_numbers else "",
+            )
+        except QRError as exc:
+            return Response({"detail": str(exc)},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        record_access(request, "платёжный QR", AccessLog.ACTION_DETAIL)
+
+        return Response({
+            "payload": payload,
+            "amount": amount,
+            "purpose": purpose,
+            # Реквизиты отдаём отдельно: не у всех под рукой сканер, и
+            # переписать их руками должно быть можно.
+            "requisites": {
+                "name": request.org.payment_name,
+                "inn": request.org.inn,
+                "kpp": request.org.kpp,
+                "account": request.org.bank_account,
+                "bank": request.org.bank_name,
+                "bic": request.org.bank_bic,
+                "corr_account": request.org.bank_corr_account,
+            },
+        })
+
+
+class MyPaymentQRImageView(APIView):
+    """Тот же QR картинкой — чтобы фронт не тянул генератор кодов."""
+
+    permission_classes = [IsOrgMember]
+
+    def get(self, request):
+        member = getattr(request.user, "member", None)
+        if member is None:
+            return HttpResponse(status=400)
+
+        raw_amount = request.query_params.get("amount")
+        amount = None
+        if raw_amount:
+            try:
+                amount = Decimal(str(raw_amount))
+            except (InvalidOperation, ValueError):
+                return HttpResponse(status=400)
+
+        plot_numbers = [plot.number for plot in member.plots]
+        try:
+            payload = build_payment_payload(
+                request.org,
+                amount=amount,
+                purpose=build_purpose(request.org, plot_numbers=plot_numbers),
+                pers_acc=plot_numbers[0] if plot_numbers else "",
+            )
+        except QRError:
+            return HttpResponse(status=400)
+
+        response = HttpResponse(render_png(payload), content_type="image/png")
+        # QR содержит сумму долга конкретного человека — в общий кеш ему
+        # попадать незачем.
+        response["Cache-Control"] = "private, max-age=0, no-store"
+        return response
 
 
 class PayView(APIView):
