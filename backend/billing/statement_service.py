@@ -108,7 +108,13 @@ def apply_statement(statement, *, user=None):
         rows = (
             statement.transactions.select_related("plot")
             .filter(status=BankTransaction.STATUS_NEW)
-            .select_for_update()
+            # of=("self",) обязателен: plot — необязательное поле, из-за
+            # него select_related даёт LEFT JOIN, а PostgreSQL запрещает
+            # FOR UPDATE на висячей стороне внешнего соединения. Без
+            # уточнения «блокировать только сами строки выписки» запрос
+            # падает с NotSupportedError. SQLite select_for_update
+            # игнорирует целиком, поэтому на нём это не воспроизводится.
+            .select_for_update(of=("self",))
         )
         for row in rows:
             if row.plot is None:
