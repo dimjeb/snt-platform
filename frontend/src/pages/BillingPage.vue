@@ -282,6 +282,12 @@ function filterChargeTypes(val, update) {
 async function createChargeType(name, done) {
   const title = (name || '').trim()
   if (!title) { done(null); return }
+  // Ввели название уже существующего вида — выбираем его, а не заводим
+  // второй такой же: иначе в списке копятся дубли «Ремонт дороги».
+  const existing = allChargeTypes.value.find(
+    (t) => t.label.toLowerCase() === title.toLowerCase(),
+  )
+  if (existing) { done(existing.value); return }
   try {
     const { data } = await api.post('/billing/charge-types/', {
       name: title, category: 'target', is_active: true,
