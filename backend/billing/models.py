@@ -100,6 +100,14 @@ class Charge(OrgModel):
 
     @property
     def paid_amount(self):
+        # Когда платежи подтянуты через prefetch_related, считаем в памяти:
+        # aggregate() всегда идёт в базу, и на списке из сотни начислений
+        # это оборачивалось сотней запросов поверх уже загруженных данных.
+        if "payments" in getattr(self, "_prefetched_objects_cache", {}):
+            return sum(
+                (p.amount for p in self.payments.all() if not p.is_cancelled),
+                Decimal("0"),
+            )
         return self.payments.filter(
             is_cancelled=False
         ).aggregate(total=models.Sum("amount"))["total"] or Decimal("0")
@@ -153,3 +161,183 @@ class Payment(OrgModel):
 
     def __str__(self):
         return f"{self.charge.plot} / {self.date} / {self.amount} ₽ ({self.get_method_display()})"
+
+
+class BankStatement(OrgModel):
+    """
+    Загруженная банковская выписка.
+
+    Разбор и проведение разделены намеренно: сначала казначей видит, что
+    система поняла, и только потом нажимает «Провести». Автоматическое
+    зачисление по догадке — это чужой долг, закрытый чужими деньгами,
+    и обнаруживается такое через месяцы.
+    """
+
+    STATUS_PARSED = "parsed"
+    STATUS_APPLIED = "applied"
+
+    STATUS_CHOICES = [
+        (STATUS_PARSED, "Разобрана"),
+        (STATUS_APPLIED, "Проведена"),
+    ]
+
+    file_name = models.CharField("Файл", max_length=255)
+    account = models.CharField("Расчётный счёт", max_length=20, blank=True)
+    date_from = models.DateField("Период с", null=True, blank=True)
+    date_to = models.DateField("Период по", null=True, blank=True)
+    status = models.CharField("Статус", max_length=10, choices=STATUS_CHOICES,
+                              default=STATUS_PARSED)
+    uploaded_by = models.ForeignKey(
+        "accounts.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+", verbose_name="Загрузил",
+    )
+    applied_at = models.DateTimeField("Проведена", null=True, blank=True)
+    notes = models.TextField("Примечания", blank=True)
+
+    class Meta:
+        verbose_name = "Банковская выписка"
+        verbose_name_plural = "Банковские выписки"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.file_name} ({self.date_from} – {self.date_to})"
+
+
+class BankTransaction(OrgModel):
+    """Одна строка выписки — поступление на счёт товарищества."""
+
+    MATCH_PLOT = "plot"
+    MATCH_NAME = "name"
+    MATCH_NONE = "none"
+    MATCH_MANUAL = "manual"
+
+    MATCH_CHOICES = [
+        (MATCH_PLOT, "По номеру участка"),
+        (MATCH_NAME, "По ФИО плательщика"),
+        (MATCH_NONE, "Не опознан"),
+        (MATCH_MANUAL, "Указан вручную"),
+    ]
+
+    STATUS_NEW = "new"
+    STATUS_APPLIED = "applied"
+    STATUS_SKIPPED = "skipped"
+
+    STATUS_CHOICES = [
+        (STATUS_NEW, "Ожидает проведения"),
+        (STATUS_APPLIED, "Проведён"),
+        (STATUS_SKIPPED, "Пропущен"),
+    ]
+
+    statement = models.ForeignKey(
+        BankStatement, on_delete=models.CASCADE, related_name="transactions",
+        verbose_name="Выписка",
+    )
+    doc_number = models.CharField("Номер документа", max_length=50, blank=True)
+    date = models.DateField("Дата")
+    amount = models.DecimalField("Сумма", max_digits=12, decimal_places=2)
+    payer_name = models.CharField("Плательщик", max_length=255, blank=True)
+    payer_account = models.CharField("Счёт плательщика", max_length=34, blank=True)
+    purpose = models.TextField("Назначение платежа", blank=True)
+
+    plot = models.ForeignKey(
+        "members.Plot", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+", verbose_name="Участок",
+    )
+    member = models.ForeignKey(
+        "members.Member", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+", verbose_name="Член СНТ",
+    )
+    match_kind = models.CharField("Как опознан", max_length=10,
+                                  choices=MATCH_CHOICES, default=MATCH_NONE)
+    status = models.CharField("Статус", max_length=10, choices=STATUS_CHOICES,
+                              default=STATUS_NEW)
+    note = models.CharField("Комментарий", max_length=255, blank=True)
+
+    class Meta:
+        verbose_name = "Строка выписки"
+        verbose_name_plural = "Строки выписки"
+        ordering = ["date", "pk"]
+        constraints = [
+            # Повторная загрузка того же файла не должна задваивать деньги.
+            # Ключ — организация, дата, сумма, номер документа и счёт
+            # плательщика: полного совпадения всего этого у двух разных
+            # платежей практически не бывает.
+            models.UniqueConstraint(
+                fields=["organization", "date", "amount", "doc_number",
+                        "payer_account"],
+                name="unique_bank_transaction",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.date} {self.amount} ₽ от {self.payer_name or 'неизвестно'}"
+
+
+class PlotCredit(OrgModel):
+    """
+    Движение аванса по участку.
+
+    Хранится не одним числом «остаток», а лентой движений: плюс —
+    поступили деньги сверх начислений, минус — аванс пошёл на погашение
+    нового начисления. Остаток всегда равен сумме ленты.
+
+    Так сделано потому, что аванс — это чужие деньги на счёте
+    товарищества. На вопрос «откуда у меня 3000 рублей аванса и куда они
+    делись» одно поле с остатком ответить не может, а лента отвечает
+    построчно, с датами и ссылками на начисления.
+    """
+
+    SOURCE_STATEMENT = "statement"
+    SOURCE_ELECTRICITY = "electricity"
+    SOURCE_MANUAL = "manual"
+
+    SOURCE_CHOICES = [
+        (SOURCE_STATEMENT, "Переплата по выписке"),
+        (SOURCE_ELECTRICITY, "Возврат за свет"),
+        (SOURCE_MANUAL, "Вручную"),
+    ]
+
+    plot = models.ForeignKey(
+        "members.Plot", on_delete=models.CASCADE, related_name="credits",
+        verbose_name="Участок",
+    )
+    date = models.DateField("Дата")
+    source = models.CharField(
+        "Источник", max_length=20, choices=SOURCE_CHOICES,
+        default=SOURCE_STATEMENT,
+        help_text=(
+            "Нужен, чтобы повторный расчёт не выписал второй такой же "
+            "возврат и при этом не затёр переплату по выписке за ту же дату."
+        ),
+    )
+    period = models.ForeignKey(
+        BillingPeriod, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="credits", verbose_name="Расчётный период",
+    )
+    amount = models.DecimalField(
+        "Сумма", max_digits=12, decimal_places=2,
+        help_text="Положительная — аванс зачислен, отрицательная — израсходован.",
+    )
+    transaction = models.ForeignKey(
+        "billing.BankTransaction", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="credits", verbose_name="Строка выписки",
+    )
+    charge = models.ForeignKey(
+        Charge, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="credit_entries", verbose_name="Начисление",
+    )
+    payment = models.ForeignKey(
+        Payment, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="credit_entries", verbose_name="Платёж",
+    )
+    notes = models.CharField("Комментарий", max_length=255, blank=True)
+
+    class Meta:
+        verbose_name = "Движение аванса"
+        verbose_name_plural = "Авансы"
+        ordering = ["-date", "-pk"]
+        indexes = [models.Index(fields=["organization", "plot"])]
+
+    def __str__(self):
+        sign = "+" if self.amount >= 0 else ""
+        return f"{self.plot} {self.date}: {sign}{self.amount} ₽"

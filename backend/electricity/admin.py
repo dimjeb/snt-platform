@@ -12,8 +12,9 @@ class EnergyTariffAdmin(admin.ModelAdmin):
 class MeterReadingInline(admin.TabularInline):
     model = MeterReading
     extra = 0
-    fields = ("date", "value", "value_night", "submitted_by", "notes")
-    readonly_fields = ("submitted_by",)
+    fields = ("date", "value", "value_night", "is_estimated",
+              "submitted_by", "notes")
+    readonly_fields = ("submitted_by", "is_estimated")
 
 
 @admin.register(Meter)

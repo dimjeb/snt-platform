@@ -1,4 +1,12 @@
-{$DOMAIN::80} {
+# DOMAIN не задан — берём боевой домен: Caddy сам выпустит сертификат.
+# Прежнее значение {$DOMAIN::80} поднимало сайт на голом 80 порту без TLS.
+{$DOMAIN:snt-platforma.ru} {
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    header X-Content-Type-Options "nosniff"
+    header X-Frame-Options "SAMEORIGIN"
+    header Referrer-Policy "strict-origin-when-cross-origin"
+    header -Server
+
     # API и Django admin
     handle /api/* {
         reverse_proxy backend:8000
@@ -14,10 +22,27 @@
         root * /srv
         file_server
     }
-    # SPA frontend — всё остальное
+    # Файлы сборки: в именах лежит хеш содержимого, поэтому их можно
+    # кешировать навсегда — при изменении меняется и имя.
+    handle /assets/* {
+        root * /srv/www
+        header Cache-Control "public, max-age=31536000, immutable"
+        file_server
+    }
+
+    # SPA frontend — всё остальное.
+    #
+    # index.html кешировать нельзя ни в коем случае. Он ссылается на
+    # файлы сборки по именам с хешем, а пересборка старые удаляет. Пока
+    # заголовков не было, браузер держал index.html у себя по своему
+    # усмотрению, после выката просил из него файлы, которых на диске
+    # уже нет, и получал белый экран: динамический импорт страницы
+    # падал. Переход на страницу при этом отвергался, и форма входа
+    # показывала «Ошибка сервера» при успешном входе.
     handle {
         root * /srv/www
         try_files {path} /index.html
+        header Cache-Control "no-cache"
         file_server
     }
     encode gzip

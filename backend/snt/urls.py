@@ -18,6 +18,7 @@ urlpatterns = [
     path("api/", include("members.urls")),
     path("api/", include("billing.urls")),
     path("api/", include("electricity.urls")),
+    path("api/", include("payments.urls")),
     path("api/", include("reports.urls")),
 
     # API Schema

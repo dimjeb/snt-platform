@@ -28,6 +28,15 @@ api.interceptors.response.use(
   (r) => r,
   async (error) => {
     const original = error.config
+    // Сервер закрыл доступ до смены временного пароля — ведём на форму.
+    if (
+      error.response?.status === 403 &&
+      error.response?.data?.must_change_password &&
+      window.location.pathname !== '/change-password'
+    ) {
+      window.location.assign('/change-password')
+      return Promise.reject(error)
+    }
     if (error.response?.status === 401 && !original._retry) {
       original._retry = true
       const auth = useAuthStore()
@@ -36,7 +45,12 @@ api.interceptors.response.use(
         original.headers.Authorization = `Bearer ${auth.accessToken}`
         return api(original)
       } catch {
+        // Refresh протух или отозван — держать человека на странице,
+        // которая молча не грузится, хуже, чем вернуть на вход.
         auth.logout()
+        if (window.location.pathname !== '/login') {
+          window.location.assign('/login')
+        }
       }
     }
     return Promise.reject(error)

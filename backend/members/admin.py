@@ -10,10 +10,19 @@ class PlotOwnershipInline(admin.TabularInline):
 
 @admin.register(Plot)
 class PlotAdmin(admin.ModelAdmin):
-    list_display = ("number", "organization", "area_sotok", "current_owner", "cadastral_number")
+    list_display = (
+        "number", "organization", "area_sotok", "owners", "cadastral_number",
+    )
     list_filter = ("organization",)
     search_fields = ("number", "cadastral_number")
     inlines = [PlotOwnershipInline]
+
+    @admin.display(description="Собственники")
+    def owners(self, obj):
+        return obj.current_owners_display
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).prefetch_related("ownerships__member")
 
 
 @admin.register(Member)
