@@ -235,6 +235,13 @@ with sync_playwright() as pw:
     page.goto(f"{BASE}/billing", wait_until="networkidle")
     page.wait_for_timeout(2000)
 
+    # Имя собственника в сводке долгов: шаблон читал несуществующее
+    # поле member_name, и во всех строках стоял голый номер участка с
+    # висящим тире. Серверный тест этого не видит — API отвечал верно.
+    debt_text = body_text(page)
+    verify("в сводке долгов видно имя собственника",
+           "Проверкин" in debt_text, debt_text[:200])
+
     page.get_by_role("button", name="Начислить пени").click()
     page.wait_for_timeout(800)
     confirm = body_text(page)

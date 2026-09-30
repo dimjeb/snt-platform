@@ -823,6 +823,27 @@ class Command(BaseCommand):
                     Charge.objects.filter(pk=full.pk).exists()
                     and Charge.objects.filter(pk=extra.pk).exists())
 
+        # Пустой результат обязан объяснять причину. Отчёт пользователя:
+        # нажал кнопку, получил спокойное сообщение и ушёл уверенный,
+        # что пени выписаны, — а у всех начислений просто не был
+        # заполнен срок оплаты.
+        quiet_org = Organization.objects.create(name="Без сроков", is_active=True)
+        quiet_period = BillingPeriod.objects.create(
+            organization=quiet_org, year=2026, month=5,
+        )
+        quiet_type = ChargeType.objects.create(
+            organization=quiet_org, category=ChargeType.TYPE_MEMBERSHIP,
+            name="Членский взнос",
+        )
+        quiet_plot = Plot.objects.create(organization=quiet_org, number="1")
+        Charge.objects.create(organization=quiet_org, period=quiet_period,
+                              plot=quiet_plot, charge_type=quiet_type,
+                              amount=Decimal("500.00"))
+        quiet = apply_penalties(quiet_org, today=today)
+        self.verify("пустой результат называет причину: сроки не заполнены",
+                    quiet["created"] == 0 and quiet["with_due_date"] == 0
+                    and quiet["without_due_date"] == 1, quiet)
+
         # --- через API ---
         r = c.post("/api/billing/charges/apply_penalties/", **chairman_headers)
         self.verify("председатель может начислить пени кнопкой",

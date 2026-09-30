@@ -1,0 +1,1 @@
+import{G as e,H as t}from"./index-C5hH0OO2.js";var n=e(({app:e})=>{e.use(t())});export{n as default};
