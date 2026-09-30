@@ -350,6 +350,25 @@ async function loadPeriods() {
   }
 }
 
+// Порядок строк на вкладке «Начисления».
+// Номер участка — строка («12а», «а-15»), и база сравнивает его
+// посимвольно: 1, 10, 100, 101 … 2. Сравниваем с numeric: true — так
+// 2 встаёт перед 10, а буквенные номера не ломаются.
+// Внутри участка пени идут сразу под тем начислением, за просрочку
+// которого они выписаны: группой считается id исходного начисления.
+// Раньше порядок внутри участка не задавался вовсе, и пени прыгали то
+// выше взноса, то ниже.
+function chargeOrder(a, b) {
+  const byPlot = String(a.plot_number).localeCompare(
+    String(b.plot_number), 'ru', { numeric: true },
+  )
+  if (byPlot) return byPlot
+  const groupA = a.penalty_for || a.id
+  const groupB = b.penalty_for || b.id
+  if (groupA !== groupB) return groupA - groupB
+  return (a.penalty_for ? 1 : 0) - (b.penalty_for ? 1 : 0)
+}
+
 async function onPeriodChange(pid) {
   if (!pid) return
   const [debt, ch, pay] = await Promise.all([
@@ -361,7 +380,7 @@ async function onPeriodChange(pid) {
     api.get(`/billing/payments/?period=${pid}&page_size=500`),
   ])
   debtSummary.value = debt.data
-  charges.value = ch.data.results || ch.data
+  charges.value = [...(ch.data.results || ch.data)].sort(chargeOrder)
   payments.value = pay.data.results || pay.data
   chargesTotal.value = ch.data.count ?? charges.value.length
   paymentsTotal.value = pay.data.count ?? payments.value.length
