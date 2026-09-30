@@ -107,9 +107,15 @@ class BillingPeriodViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
 
 
 class ChargeViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
+    # pk в конце — чтобы порядок строк одного участка не зависел от
+    # того, как PostgreSQL сегодня разложил их на диске. Без него
+    # страница из 500 строк при большем числе начислений набиралась
+    # каждый раз немного по-разному.
     queryset = Charge.objects.select_related(
         "period", "plot", "charge_type"
-    ).prefetch_related("payments")
+    ).prefetch_related("payments").order_by(
+        "-period__year", "-period__month", "plot__number", "pk"
+    )
     serializer_class = ChargeSerializer
     filterset_fields = ["period", "plot", "charge_type"]
 

@@ -134,6 +134,14 @@ overdue_type = ChargeType.objects.create(
 Charge.objects.create(organization=org, period=period, plot=p,
                       charge_type=overdue_type, amount="1000.00",
                       due_date=date(2026, 9, 1), penalty_percent="20.00")
+
+# Участки 10 и 2 — чтобы строковая сортировка номеров («1, 10, 2»)
+# не прошла незамеченной: создаём 10-й раньше 2-го, порядок в базе
+# тоже не должен подсказать правильный ответ.
+for number in ("10", "2"):
+    extra = Plot.objects.create(organization=org, number=number, area_sotok="6.00")
+    Charge.objects.create(organization=org, period=period, plot=extra,
+                          charge_type=ctype, amount="100.00")
 u = User(username=os.environ["SMOKE_LOGIN"], organization=org, member=m,
          role=User.ROLE_MEMBER, is_active=True, must_change_password=True)
 u.set_password(os.environ["SMOKE_PASSWORD"])

@@ -264,6 +264,20 @@ with sync_playwright() as pw:
     verify("у просроченного начисления виден срок оплаты",
            "Оплатить до 01.09.2026" in charges_text, "")
 
+    # Порядок строк: номера участков по числу, а не по буквам, и пени
+    # сразу под тем начислением, за просрочку которого выписаны.
+    pos2 = charges_text.find("Уч. №2 ")
+    pos10 = charges_text.find("Уч. №10 ")
+    verify("участок 2 стоит раньше участка 10",
+           0 <= pos2 < pos10, f"позиции {pos2} и {pos10}")
+    parent = charges_text.find("Оплатить до 01.09.2026")
+    penalty = charges_text.find("срок 01.09.2026")
+    between = charges_text[parent:penalty] if 0 <= parent < penalty else ""
+    verify("пени стоят сразу под своим начислением",
+           0 <= parent < penalty and "Уч. №2 " not in between
+           and "Целевой взнос" not in between,
+           f"позиции {parent} и {penalty}")
+
     browser.close()
 
 print()
