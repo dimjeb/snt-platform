@@ -1,1 +1,0 @@
-import{G as e,H as t}from"./index-Ddip7x8h.js";var n=e(({app:e})=>{e.use(t())});export{n as default};
