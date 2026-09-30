@@ -12,6 +12,7 @@ class ChargeType(OrgModel):
     TYPE_WATER = "water"
     TYPE_GARBAGE = "garbage"
     TYPE_SECURITY = "security"
+    TYPE_PENALTY = "penalty"
     TYPE_OTHER = "other"
 
     CATEGORY_CHOICES = [
@@ -21,6 +22,7 @@ class ChargeType(OrgModel):
         (TYPE_WATER, "Водоснабжение"),
         (TYPE_GARBAGE, "Вывоз мусора"),
         (TYPE_SECURITY, "Охрана"),
+        (TYPE_PENALTY, "Пени за просрочку"),
         (TYPE_OTHER, "Прочее"),
     ]
 
@@ -84,6 +86,20 @@ class Charge(OrgModel):
     )
     amount = models.DecimalField("Сумма", max_digits=12, decimal_places=2)
     description = models.CharField("Описание", max_length=500, blank=True)
+    due_date = models.DateField("Оплатить до", null=True, blank=True)
+    penalty_percent = models.DecimalField(
+        "Пени за просрочку, %", max_digits=5, decimal_places=2,
+        default=Decimal("20.00"),
+        help_text="Начисляются однократно, если к указанной дате осталась задолженность",
+    )
+    # Ссылка от начисления пеней на просроченное начисление. OneToOne, а не
+    # обычный FK: это и есть гарантия «пени ровно один раз» — вторую строку
+    # база просто не даст создать, даже если команду запустят дважды подряд
+    # или параллельно из двух мест.
+    penalty_for = models.OneToOneField(
+        "self", verbose_name="Пени по начислению", null=True, blank=True,
+        on_delete=models.CASCADE, related_name="penalty",
+    )
     # Для электроэнергии: фиксируем расчётные данные
     kwh = models.DecimalField("кВт·ч", max_digits=10, decimal_places=3, null=True, blank=True)
     tariff = models.DecimalField(
@@ -115,6 +131,15 @@ class Charge(OrgModel):
     @property
     def debt(self):
         return self.amount - self.paid_amount
+
+    @property
+    def is_overdue(self):
+        """Срок оплаты прошёл, а долг остался."""
+        from django.utils import timezone
+
+        if self.due_date is None:
+            return False
+        return self.due_date < timezone.localdate() and self.debt > 0
 
 
 class Payment(OrgModel):

@@ -394,6 +394,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("НАЧИСЛЕНИЕ ПО СОТКАМ"))
         self._check_charges_per_sotka(c, CH)
 
+        # ---------------- Пени за просрочку ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("ПЕНИ ЗА ПРОСРОЧКУ"))
+        self._check_penalties(c, CH, ME)
+
         # ---------------- Электроэнергия ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("ЭЛЕКТРОЭНЕРГИЯ"))
         self._check_electricity_gaps()
@@ -657,6 +661,120 @@ class Command(BaseCommand):
                 f"без обязательного поля {field} начисление отклонено ({body})",
                 r.status_code == 400, f"HTTP {r.status_code}",
             )
+
+    def _check_penalties(self, c, chairman_headers, member_headers):
+        """
+        Однократные пени по начислениям с истёкшим сроком оплаты.
+
+        Три вещи, на которых такая механика обычно ломается:
+        пени начисляются дважды при повторном запуске; пени берутся с
+        полной суммы, хотя человек внёс часть; пени прилетают тому, кто
+        заплатил вовремя. Проверяем все три, плюс что сам счёт пеней
+        пенями не обрастает.
+        """
+        from datetime import date, timedelta
+        from decimal import Decimal
+
+        from billing.models import BillingPeriod, Charge, ChargeType, Payment
+        from billing.services import apply_penalties
+        from members.models import Member, Plot, PlotOwnership
+        from organizations.models import Organization
+
+        org = Organization.objects.create(name="Проверка пеней", is_active=True)
+        period = BillingPeriod.objects.create(organization=org, year=2026, month=5)
+        ctype = ChargeType.objects.create(
+            organization=org, category=ChargeType.TYPE_MEMBERSHIP,
+            name="Членский взнос",
+        )
+        today = date(2026, 6, 15)
+        overdue_on = today - timedelta(days=1)
+
+        plots = {}
+        for number in ("1", "2", "3", "4"):
+            member = Member.objects.create(
+                organization=org, last_name=f"Пеняев{number}", first_name="П",
+            )
+            plot = Plot.objects.create(organization=org, number=number,
+                                       area_sotok="6.00")
+            PlotOwnership.objects.create(organization=org, plot=plot,
+                                         member=member, date_from=date(2026, 1, 1))
+            plots[number] = plot
+
+        def charge_for(number, *, due, amount="1000.00"):
+            return Charge.objects.create(
+                organization=org, period=period, plot=plots[number],
+                charge_type=ctype, amount=Decimal(amount), due_date=due,
+                penalty_percent=Decimal("20.00"),
+            )
+
+        # 1 — просрочил целиком, 2 — внёс половину, 3 — заплатил всё,
+        # 4 — срок ещё не наступил.
+        full = charge_for("1", due=overdue_on)
+        partial = charge_for("2", due=overdue_on)
+        paid = charge_for("3", due=overdue_on)
+        future = charge_for("4", due=today + timedelta(days=10))
+
+        Payment.objects.create(organization=org, charge=partial,
+                               date=overdue_on, amount=Decimal("400.00"),
+                               method=Payment.METHOD_CASH)
+        Payment.objects.create(organization=org, charge=paid,
+                               date=overdue_on, amount=Decimal("1000.00"),
+                               method=Payment.METHOD_CASH)
+
+        result = apply_penalties(org, today=today)
+        self.verify("пени начислены только должникам", result["created"] == 2,
+                    result)
+
+        def penalty_of(charge):
+            row = Charge.objects.filter(penalty_for=charge).first()
+            return row.amount if row else None
+
+        self.verify("пени 20 % от полного долга",
+                    penalty_of(full) == Decimal("200.00"), penalty_of(full))
+        self.verify("пени считаются от остатка, а не от суммы начисления",
+                    penalty_of(partial) == Decimal("120.00"),
+                    penalty_of(partial))
+        self.verify("заплатившему вовремя пеней нет",
+                    penalty_of(paid) is None, penalty_of(paid))
+        self.verify("до срока оплаты пеней нет",
+                    penalty_of(future) is None, penalty_of(future))
+        note = Charge.objects.filter(penalty_for=full).first().description or ""
+        self.verify("в описании пеней названы ставка, срок и долг",
+                    "Пени 20 %" in note and "срок 14.06.2026" in note
+                    and "1000.00" in note, note)
+
+        # Повторный запуск — команду ставят в cron, однажды она
+        # отработает дважды.
+        again = apply_penalties(org, today=today)
+        self.verify("повторный запуск не задваивает пени",
+                    again["created"] == 0
+                    and Charge.objects.filter(
+                        organization=org,
+                        charge_type__category=ChargeType.TYPE_PENALTY).count() == 2,
+                    again)
+
+        # Долг вырос? Нет: пени сами пенями не обрастают.
+        penalty_row = Charge.objects.filter(penalty_for=full).first()
+        penalty_row.due_date = overdue_on
+        penalty_row.save(update_fields=["due_date", "updated_at"])
+        third = apply_penalties(org, today=today)
+        self.verify("на пени пени не начисляются", third["created"] == 0, third)
+
+        # Просрочил, но заплатил до того, как казначей нажал кнопку.
+        late = charge_for("4", due=overdue_on, amount="500.00")
+        Payment.objects.create(organization=org, charge=late, date=today,
+                               amount=Decimal("500.00"),
+                               method=Payment.METHOD_CASH)
+        self.verify("оплата после срока, но до запуска — без пеней",
+                    apply_penalties(org, today=today)["created"] == 0)
+
+        # --- через API ---
+        r = c.post("/api/billing/charges/apply_penalties/", **chairman_headers)
+        self.verify("председатель может начислить пени кнопкой",
+                    r.status_code == 200, f"HTTP {r.status_code}")
+        r = c.post("/api/billing/charges/apply_penalties/", **member_headers)
+        self.verify("рядовой член пени начислить не может",
+                    r.status_code == 403, f"HTTP {r.status_code}")
 
     def _check_electricity_gaps(self):
         """

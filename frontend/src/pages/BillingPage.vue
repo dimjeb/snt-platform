@@ -25,6 +25,11 @@
         <div class="row q-mb-sm q-gutter-sm" v-if="auth.isChairman || auth.isTreasurer">
           <q-btn size="sm" outline color="green-8" icon="add" label="Членский взнос" @click="bulkMembershipDialog = true" />
           <q-btn size="sm" outline color="blue-8" icon="add" label="Целевой взнос" @click="bulkTargetDialog = true" />
+          <q-btn
+            size="sm" outline color="deep-orange-8" icon="gavel"
+            label="Начислить пени" :loading="actionLoading"
+            @click="confirmPenalties"
+          />
         </div>
 
         <q-list separator bordered rounded>
@@ -54,6 +59,15 @@
             <q-item-section>
               <q-item-label>{{ c.charge_type_name }}</q-item-label>
               <q-item-label caption>Уч. №{{ c.plot_number }} · {{ c.description }}</q-item-label>
+              <q-item-label v-if="c.due_date" caption>
+                <span :class="c.is_overdue ? 'text-negative text-weight-medium' : ''">
+                  Оплатить до {{ formatDate(c.due_date) }}
+                  <template v-if="c.is_overdue"> · просрочено</template>
+                </span>
+                <template v-if="Number(c.penalty_percent) > 0">
+                  · пени {{ Number(c.penalty_percent) }} %
+                </template>
+              </q-item-label>
             </q-item-section>
             <q-item-section side>{{ formatMoney(c.amount) }} ₽</q-item-section>
           </q-item>
@@ -111,6 +125,16 @@
               v-if="membershipForm.basis === 'per_sotka'"
               class="text-caption text-grey-8 charge-preview"
             >{{ membershipPreview }}</div>
+            <q-input
+              v-model="membershipForm.due_date"
+              label="Оплатить до" outlined dense type="date"
+              hint="Необязательно. После этой даты на остаток долга один раз начисляются пени."
+            />
+            <q-input
+              v-if="membershipForm.due_date"
+              v-model="membershipForm.penalty_percent"
+              label="Пени, % от остатка долга" outlined dense type="number"
+            />
             <q-input v-model="membershipForm.description" label="Описание" outlined dense />
           </q-form>
         </q-card-section>
@@ -158,6 +182,16 @@
             v-if="targetForm.basis === 'per_sotka'"
             class="text-caption text-grey-8 charge-preview"
           >{{ targetPreview }}</div>
+          <q-input
+            v-model="targetForm.due_date"
+            label="Оплатить до" outlined dense type="date"
+            hint="Необязательно. После этой даты на остаток долга один раз начисляются пени."
+          />
+          <q-input
+            v-if="targetForm.due_date"
+            v-model="targetForm.penalty_percent"
+            label="Пени, % от остатка долга" outlined dense type="number"
+          />
           <q-input v-model="targetForm.description" label="Описание" outlined dense />
 
           <q-option-group
@@ -230,10 +264,13 @@ const bulkTargetDialog = ref(false)
 const paymentDialog = ref(false)
 // Членские в большинстве товариществ считают от площади, целевые чаще
 // одной суммой на участок — отсюда разные значения по умолчанию.
-const membershipForm = ref({ basis: 'per_sotka', amount: '', rate: '', description: '' })
+const membershipForm = ref({
+  basis: 'per_sotka', amount: '', rate: '', description: '',
+  due_date: '', penalty_percent: '20',
+})
 const targetForm = ref({
   charge_type_id: null, basis: 'flat', amount: '', rate: '',
-  description: '', plot_ids: [],
+  description: '', plot_ids: [], due_date: '', penalty_percent: '20',
 })
 const basisOptions = [
   { label: 'Фиксированная сумма на участок', value: 'flat' },
@@ -257,6 +294,14 @@ const methodOptions = [
 ]
 function methodLabel(m) { return methodOptions.find((o) => o.value === m)?.label || m }
 function formatMoney(v) { return v ? Number(v).toLocaleString('ru-RU', { maximumFractionDigits: 0 }) : '0' }
+function formatDate(v) { return v ? v.split('-').reverse().join('.') : '' }
+
+// Срок и ставку пеней шлём только вместе: без срока процент не от чего
+// отсчитывать, и сервер его всё равно обнулит.
+function penaltyPayload(form) {
+  if (!form.due_date) return {}
+  return { due_date: form.due_date, penalty_percent: form.penalty_percent || 0 }
+}
 
 async function loadPeriods() {
   const { data } = await api.get('/billing/periods/?page_size=24&ordering=-year,-month')
@@ -440,12 +485,13 @@ async function createTarget() {
         // plot_ids не шлём вовсе, если начисляем всем: сериализатор
         // трактует отсутствие поля как «все участки».
         ...(plotIds ? { plot_ids: plotIds } : {}),
+        ...penaltyPayload(targetForm.value),
       },
     )
     bulkTargetDialog.value = false
     targetForm.value = {
       charge_type_id: null, basis: 'flat', amount: '', rate: '',
-      description: '', plot_ids: [],
+      description: '', plot_ids: [], due_date: '', penalty_percent: '20',
     }
     targetScope.value = 'all'
     await onPeriodChange(selectedPeriod.value)
@@ -507,6 +553,7 @@ async function createMembership() {
           ? { rate: membershipForm.value.rate }
           : { amount: membershipForm.value.amount }),
         description: membershipForm.value.description,
+        ...penaltyPayload(membershipForm.value),
       },
     )
     bulkMembershipDialog.value = false
@@ -516,6 +563,37 @@ async function createMembership() {
                   data.skipped_no_area)
   } catch (e) { $q.notify({ type: 'negative', message: errText(e, 'Ошибка') }) }
   finally { actionLoading.value = false }
+}
+
+// Пени необратимы: снять начисление можно только руками, по одному.
+// Поэтому спрашиваем подтверждение, а в тексте называем ставку и то,
+// что считается она от остатка долга, а не от полной суммы взноса.
+function confirmPenalties() {
+  $q.dialog({
+    title: 'Начислить пени',
+    message: 'Пени начислятся один раз по каждому начислению, у которого '
+      + 'прошёл срок оплаты и остался долг. Считаются от остатка долга. '
+      + 'Тем, кто уже заплатил, ничего не начислится. Продолжить?',
+    cancel: { label: 'Отмена', flat: true },
+    ok: { label: 'Начислить', color: 'deep-orange-8' },
+    persistent: true,
+  }).onOk(applyPenalties)
+}
+
+async function applyPenalties() {
+  actionLoading.value = true
+  try {
+    const { data } = await api.post('/billing/charges/apply_penalties/')
+    await onPeriodChange(selectedPeriod.value)
+    $q.notify({
+      type: data.created ? 'warning' : 'positive',
+      message: data.created
+        ? `Начислено пеней: ${data.created} на ${formatMoney(data.total)} ₽`
+        : 'Просроченных начислений нет — пени начислять не за что',
+    })
+  } catch (e) {
+    $q.notify({ type: 'negative', message: errText(e, 'Не удалось начислить пени') })
+  } finally { actionLoading.value = false }
 }
 
 async function createPayment() {
