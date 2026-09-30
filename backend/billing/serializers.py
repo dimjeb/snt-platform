@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 from .services import BASIS_FLAT, BASIS_PER_SOTKA
 from .models import BankStatement, BankTransaction, ChargeType, BillingPeriod, Charge, Payment
@@ -34,6 +36,7 @@ class ChargeSerializer(serializers.ModelSerializer):
     plot_number = serializers.CharField(source="plot.number", read_only=True)
     period_label = serializers.CharField(source="period.__str__", read_only=True)
     payments = PaymentSerializer(many=True, read_only=True)
+    is_overdue = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Charge
@@ -63,6 +66,11 @@ class BulkChargeBasisMixin(serializers.Serializer):
         max_digits=12, decimal_places=2, required=False, allow_null=True
     )
     description = serializers.CharField(max_length=500, required=False, default="")
+    due_date = serializers.DateField(required=False, allow_null=True, default=None)
+    penalty_percent = serializers.DecimalField(
+        max_digits=5, decimal_places=2, required=False, allow_null=True,
+        default=None, min_value=Decimal(0), max_value=Decimal(100),
+    )
 
     def validate(self, data):
         basis = data.get("basis", BASIS_FLAT)
@@ -78,6 +86,11 @@ class BulkChargeBasisMixin(serializers.Serializer):
                     {"amount": "Укажите сумму взноса больше нуля."}
                 )
             data["rate"] = None
+        if data.get("due_date") is None:
+            # Без срока оплаты ставка пеней не значит ничего: начислять
+            # их не от чего отсчитывать. Чтобы в базе не оседали
+            # проценты, которые никогда не сработают, обнуляем.
+            data["penalty_percent"] = None
         return data
 
 

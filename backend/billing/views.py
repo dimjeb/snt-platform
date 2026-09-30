@@ -17,7 +17,12 @@ from .serializers import (
     BankStatementSerializer,
     BankTransactionSerializer,
 )
-from .services import create_membership_charges, create_target_charges, get_debt_summary
+from .services import (
+    apply_penalties,
+    create_membership_charges,
+    create_target_charges,
+    get_debt_summary,
+)
 from .statement import StatementError
 from .statement_service import (
     StatementImportError,
@@ -67,6 +72,8 @@ class BillingPeriodViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
             description=s.validated_data["description"],
             basis=s.validated_data["basis"],
             rate=s.validated_data["rate"],
+            due_date=s.validated_data["due_date"],
+            penalty_percent=s.validated_data["penalty_percent"],
         ))
 
     @action(detail=True, methods=["post"])
@@ -94,6 +101,8 @@ class BillingPeriodViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
             description=s.validated_data["description"],
             basis=s.validated_data["basis"],
             rate=s.validated_data["rate"],
+            due_date=s.validated_data["due_date"],
+            penalty_percent=s.validated_data["penalty_percent"],
         ))
 
 
@@ -111,6 +120,18 @@ class ChargeViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(organization=require_org(self.request))
+
+    @action(detail=False, methods=["post"])
+    def apply_penalties(self, request):
+        """
+        Начислить пени по всем просроченным начислениям товарищества.
+
+        Кнопка на случай, когда команду по расписанию ещё не поставили
+        или казначей хочет закрыть просрочку прямо сейчас. Повторное
+        нажатие ничего не задваивает.
+        """
+        result = apply_penalties(require_org(request), user=request.user)
+        return Response(result)
 
 
 class PaymentViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):

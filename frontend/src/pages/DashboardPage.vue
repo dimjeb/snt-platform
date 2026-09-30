@@ -126,6 +126,20 @@
                 <q-item-label caption v-if="Number(d.paid_amount) > 0" class="text-green-8">
                   оплачено {{ formatMoney(d.paid_amount) }} из {{ formatMoney(d.amount) }} ₽
                 </q-item-label>
+                <!-- Срок оплаты: садовод должен видеть его до того, как
+                     набегут пени, а не узнавать о них из квитанции. -->
+                <q-item-label v-if="d.due_date" caption
+                              :class="d.is_overdue ? 'text-negative text-weight-medium' : 'text-grey-8'">
+                  <template v-if="d.is_overdue">
+                    Просрочено — надо было оплатить до {{ formatDate(d.due_date) }}
+                  </template>
+                  <template v-else>
+                    Оплатить до {{ formatDate(d.due_date) }}
+                  </template>
+                  <template v-if="Number(d.penalty_percent) > 0">
+                    , иначе пени {{ Number(d.penalty_percent) }} % от остатка
+                  </template>
+                </q-item-label>
                 <q-item-label caption class="debt-amount">
                   долг {{ formatMoney(d.debt) }} ₽
                 </q-item-label>
@@ -400,6 +414,10 @@ const qrError = ref('')
 function formatMoney(val) {
   if (!val) return '0'
   return Number(val).toLocaleString('ru-RU', { maximumFractionDigits: 0 })
+}
+
+function formatDate(val) {
+  return val ? val.split('-').reverse().join('.') : ''
 }
 
 function formatKwh(val) {

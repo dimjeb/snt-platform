@@ -36,6 +36,20 @@ def _amount_for(plot, *, basis, amount, rate):
     return (Decimal(rate) * area).quantize(KOPEK, rounding=ROUND_HALF_UP)
 
 
+def _penalty_fields(due_date, penalty_percent):
+    """
+    Срок оплаты и ставка пеней для создаваемого начисления.
+
+    Ставку не передаём вовсе, если её не указали: у поля есть значение
+    по умолчанию (20 %), и подставлять сюда None значило бы затереть
+    его на NULL, а потом получить падение при расчёте пеней.
+    """
+    fields = {"due_date": due_date}
+    if penalty_percent is not None:
+        fields["penalty_percent"] = penalty_percent
+    return fields
+
+
 def _auto_description(basis, rate, plot):
     """Расшифровка расчёта, если казначей не написал своё описание."""
     if basis != BASIS_PER_SOTKA:
@@ -46,7 +60,9 @@ def _auto_description(basis, rate, plot):
 def create_membership_charges(period: BillingPeriod, amount: Decimal = None,
                               description: str = "",
                               basis: str = BASIS_FLAT,
-                              rate: Decimal = None) -> dict:
+                              rate: Decimal = None,
+                              due_date=None,
+                              penalty_percent: Decimal = None) -> dict:
     """
     Массово создаёт начисления членских взносов для всех активных участков периода.
 
@@ -105,6 +121,7 @@ def create_membership_charges(period: BillingPeriod, amount: Decimal = None,
                     charge_type=charge_type,
                     amount=plot_amount,
                     description=description or _auto_description(basis, rate, plot),
+                    **_penalty_fields(due_date, penalty_percent),
                 )
             )
 
@@ -123,7 +140,9 @@ def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
                           amount: Decimal = None, plot_ids: list | None = None,
                           description: str = "",
                           basis: str = BASIS_FLAT,
-                          rate: Decimal = None) -> dict:
+                          rate: Decimal = None,
+                          due_date=None,
+                          penalty_percent: Decimal = None) -> dict:
     """
     Создаёт целевые взносы.
     plot_ids=None — для всех участков организации.
@@ -164,6 +183,7 @@ def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
                     charge_type=charge_type,
                     amount=plot_amount,
                     description=description or _auto_description(basis, rate, plot),
+                    **_penalty_fields(due_date, penalty_percent),
                 )
             )
 
@@ -176,6 +196,92 @@ def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
 
     return {"created": len(charges), "no_owner": sorted(no_owner),
             "skipped_no_area": sorted(no_area)}
+
+
+def apply_penalties(organization, *, today=None, user=None) -> dict:
+    """
+    Начислить пени по просроченным начислениям.
+
+    Пени начисляются **однократно** на каждое начисление и считаются от
+    остатка долга на момент запуска, а не от полной суммы: заплатил
+    половину до срока — пени только на вторую половину, заплатил всё —
+    пеней нет вовсе.
+
+    Повторный запуск ничего не задваивает: начисление пеней связано с
+    исходным через OneToOne, и вторую строку база не даст создать. Это
+    важнее, чем кажется: команду ставят в cron, и однажды она
+    отработает дважды.
+
+    Начисление, срок которого прошёл, но долг уже закрыт, пропускается
+    и **остаётся без пометки** — если человек заплатил после срока, но
+    до запуска команды, пеней он не получит. Так сделано намеренно:
+    наказывать за задержку, которую товарищество не заметило, нечестно.
+    Чтобы пени были предсказуемыми, команду надо гонять по расписанию,
+    раз в сутки.
+    """
+    from django.utils import timezone
+
+    today = today or timezone.localdate()
+
+    overdue = (
+        Charge.objects.filter(organization=organization, due_date__lt=today)
+        .exclude(charge_type__category=ChargeType.TYPE_PENALTY)
+        .filter(penalty__isnull=True)
+        .select_related("charge_type", "period", "plot")
+        .prefetch_related("payments")
+        .order_by("plot__number", "pk")
+    )
+
+    charge_type = None
+    created, total = [], Decimal("0")
+
+    for charge in overdue:
+        debt = charge.debt
+        if debt <= 0:
+            continue
+        percent = charge.penalty_percent or Decimal("0")
+        if percent <= 0:
+            continue
+        amount = (debt * percent / Decimal("100")).quantize(
+            KOPEK, rounding=ROUND_HALF_UP
+        )
+        if amount <= 0:
+            # Долг в копейку: 20 % от него округляются в ноль. Строку на
+            # ноль рублей не заводим — она только мусорит квитанцию.
+            continue
+
+        if charge_type is None:
+            charge_type, _ = ChargeType.objects.get_or_create(
+                organization=organization,
+                category=ChargeType.TYPE_PENALTY,
+                defaults={"name": "Пени за просрочку"},
+            )
+
+        # normalize() + формат «f»: у Decimal «:g» не убирает хвостовые
+        # нули, и в квитанции стояло бы «Пени 20.00 %». Так получается
+        # «20 %», а дробная ставка вроде 7.5 % сохраняется.
+        percent_text = f"{percent.normalize():f}"
+        created.append(Charge(
+            organization=organization,
+            period=charge.period,
+            plot=charge.plot,
+            charge_type=charge_type,
+            amount=amount,
+            penalty_for=charge,
+            description=(
+                f"Пени {percent_text} % за просрочку: "
+                f"«{charge.charge_type.name}», срок {charge.due_date:%d.%m.%Y}, "
+                f"долг на {today:%d.%m.%Y} — {debt} ₽"
+            )[:500],
+        ))
+        total += amount
+
+    with transaction.atomic():
+        Charge.objects.bulk_create(created)
+        # Пени — такой же долг, как остальные, и аванс должен их гасить.
+        spend_all_credits(organization, user=user)
+
+    return {"created": len(created), "total": total}
 
 
 def get_debt_summary(organization, period=None):

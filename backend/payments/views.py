@@ -161,6 +161,12 @@ class MyDebtView(APIView):
                 # Основание начисления за свет: сколько кВт·ч и по какому тарифу.
                 "kwh": charge.kwh,
                 "tariff": charge.tariff,
+                # Срок оплаты и ставка пеней: человек должен увидеть
+                # дату до того, как пени набегут, а не узнать о них
+                # из следующей квитанции.
+                "due_date": charge.due_date,
+                "penalty_percent": charge.penalty_percent,
+                "is_overdue": charge.is_overdue,
             })
 
         # Аванс: деньги, которые человек уже заплатил вперёд. Показать
