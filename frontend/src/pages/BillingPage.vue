@@ -35,7 +35,7 @@
         <q-list separator bordered rounded>
           <q-item v-for="d in debtSummary" :key="d.plot_id">
             <q-item-section>
-              <q-item-label>Уч. №{{ d.plot_number }} — {{ d.member_name }}</q-item-label>
+              <q-item-label>Уч. №{{ d.plot_number }}{{ ownerSuffix(d) }}</q-item-label>
               <q-item-label caption>
                 Нач: {{ formatMoney(d.total_charged) }} · Опл: {{ formatMoney(d.total_paid) }}
               </q-item-label>
@@ -313,6 +313,16 @@ function methodLabel(m) { return methodOptions.find((o) => o.value === m)?.label
 function formatMoney(v) { return v ? Number(v).toLocaleString('ru-RU', { maximumFractionDigits: 0 }) : '0' }
 function formatDate(v) { return v ? v.split('-').reverse().join('.') : '' }
 
+// Сводка долгов отдаёт поле owner_name, а не member_name: шаблон читал
+// несуществующее поле и во всех строках печатался голый номер участка
+// с висящим тире. Участок без собственника сервер помечает прочерком —
+// дублировать его вторым тире незачем.
+function ownerSuffix(row) {
+  const name = (row.owner_name || '').trim()
+  if (!name || name === '—') return ' — без собственника'
+  return ` — ${name}`
+}
+
 // Срок и ставку пеней шлём только вместе: без срока процент не от чего
 // отсчитывать, и сервер его всё равно обнулит.
 function penaltyPayload(form) {
@@ -320,9 +330,20 @@ function penaltyPayload(form) {
   return { due_date: form.due_date, penalty_percent: form.penalty_percent || 0 }
 }
 
+// Годовой период (month = null) давал «2026-null»: String(null) — это
+// строка «null» длиной четыре, и padStart её не трогает. Статус заодно
+// показывался по-английски, прямо как в базе.
+function periodLabel(p) {
+  const name = p.month
+    ? `${p.year}-${String(p.month).padStart(2, '0')}`
+    : `${p.year} год`
+  const status = p.status === 'closed' ? 'закрыт' : 'открыт'
+  return `${name} (${status})`
+}
+
 async function loadPeriods() {
   const { data } = await api.get('/billing/periods/?page_size=24&ordering=-year,-month')
-  periods.value = data.results.map((p) => ({ ...p, label: `${p.year}-${String(p.month).padStart(2, '0')} (${p.status})` }))
+  periods.value = data.results.map((p) => ({ ...p, label: periodLabel(p) }))
   if (periods.value.length) {
     selectedPeriod.value = periods.value[0].id
     await onPeriodChange(selectedPeriod.value)
@@ -607,12 +628,30 @@ async function applyPenalties() {
   try {
     const { data } = await api.post('/billing/charges/apply_penalties/')
     await onPeriodChange(selectedPeriod.value)
-    $q.notify({
-      type: data.created ? 'warning' : 'positive',
-      message: data.created
-        ? `Начислено пеней: ${data.created} на ${formatMoney(data.total)} ₽`
-        : 'Просроченных начислений нет — пени начислять не за что',
-    })
+    if (data.created) {
+      $q.notify({
+        type: 'warning',
+        message: `Начислено пеней: ${data.created} на ${formatMoney(data.total)} ₽`,
+      })
+    } else if (!data.with_due_date) {
+      // Поле «Оплатить до» появилось позже начислений, и у старых оно
+      // пустое. Спокойное «просроченных нет» здесь вводит в заблуждение:
+      // человек уходит уверенный, что пени выписаны.
+      $q.notify({
+        type: 'warning',
+        timeout: 0,
+        multiLine: true,
+        actions: [{ label: 'Понятно', color: 'white' }],
+        message: `Пени не начислены: ни у одного из ${data.without_due_date} `
+          + 'начислений не заполнен срок оплаты. Срок ставится при создании '
+          + 'начисления — поле «Оплатить до».',
+      })
+    } else {
+      $q.notify({
+        type: 'positive',
+        message: 'Просроченных начислений нет — пени начислять не за что',
+      })
+    }
   } catch (e) {
     $q.notify({ type: 'negative', message: errText(e, 'Не удалось начислить пени') })
   } finally { actionLoading.value = false }

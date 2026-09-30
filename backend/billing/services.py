@@ -223,6 +223,18 @@ def apply_penalties(organization, *, today=None, user=None) -> dict:
 
     today = today or timezone.localdate()
 
+    # Начисления, которые вообще участвуют в игре: всё, кроме самих
+    # пеней. Считаем их до выборки просроченных, чтобы на пустом
+    # результате уметь объяснить причину. «Ничего не начислено» без
+    # объяснения — это тот же молчаливый отказ, от которого в этом
+    # проекте везде стоят предупреждения: человек жмёт кнопку, видит
+    # спокойное сообщение и уходит уверенный, что пени выписаны.
+    eligible = Charge.objects.filter(organization=organization).exclude(
+        charge_type__category=ChargeType.TYPE_PENALTY
+    )
+    without_due_date = eligible.filter(due_date__isnull=True).count()
+    with_due_date = eligible.filter(due_date__isnull=False).count()
+
     overdue = (
         Charge.objects.filter(organization=organization, due_date__lt=today)
         .exclude(charge_type__category=ChargeType.TYPE_PENALTY)
@@ -281,7 +293,13 @@ def apply_penalties(organization, *, today=None, user=None) -> dict:
         # Пени — такой же долг, как остальные, и аванс должен их гасить.
         spend_all_credits(organization, user=user)
 
-    return {"created": len(created), "total": total}
+    return {
+        "created": len(created), "total": total,
+        # Почему могло не начислиться ничего: срок не проставлен вовсе
+        # или проставлен, но ещё не прошёл (либо долгов не осталось).
+        "without_due_date": without_due_date,
+        "with_due_date": with_due_date,
+    }
 
 
 def get_debt_summary(organization, period=None):

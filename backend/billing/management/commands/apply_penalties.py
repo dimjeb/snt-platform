@@ -58,5 +58,19 @@ class Command(BaseCommand):
                     f"{prefix}{org.name}: начислено пеней — "
                     f"{result['created']} шт. на {result['total']} ₽"
                 ))
+            elif not result["with_due_date"]:
+                # Самый частый случай на свежей установке: поле «Оплатить
+                # до» появилось позже начислений, и оно пустое у всех.
+                # Сказать «просроченных нет» здесь значило бы соврать.
+                self.stdout.write(self.style.WARNING(
+                    f"{prefix}{org.name}: ни у одного начисления не заполнен "
+                    f"срок оплаты ({result['without_due_date']} шт.) — пени "
+                    f"начислять не от чего. Срок ставится при создании "
+                    f"начисления, в поле «Оплатить до»."
+                ))
             else:
-                self.stdout.write(f"{prefix}{org.name}: просроченных начислений нет")
+                self.stdout.write(
+                    f"{prefix}{org.name}: просроченных начислений нет "
+                    f"(со сроком — {result['with_due_date']}, "
+                    f"без срока — {result['without_due_date']})"
+                )
