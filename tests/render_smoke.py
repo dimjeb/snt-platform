@@ -229,6 +229,34 @@ with sync_playwright() as pw:
     verify("сказано, что второй раз пароль не покажут",
            "Повторно пароль показать нельзя" in issued, "")
 
+    # 7. Пени: кнопка начисляет и расшифровка видна на вкладке
+    #    «Начисления». Отчёт пользователя был именно про это — пени
+    #    появились, а за что они, на экране не нашлось.
+    page.goto(f"{BASE}/billing", wait_until="networkidle")
+    page.wait_for_timeout(2000)
+
+    page.get_by_role("button", name="Начислить пени").click()
+    page.wait_for_timeout(800)
+    confirm = body_text(page)
+    verify("перед начислением пеней спрашивают подтверждение",
+           "от остатка долга" in confirm, confirm[:160])
+    page.get_by_role("button", name="Начислить", exact=True).click()
+    page.wait_for_timeout(2500)
+    verify("пени начислены кнопкой",
+           "Начислено пеней" in body_text(page), body_text(page)[:160])
+
+    page.get_by_role("tab", name="Начисления").click()
+    page.wait_for_timeout(1500)
+    charges_text = body_text(page)
+    verify("в списке появилась строка пеней",
+           "Пени за просрочку" in charges_text, charges_text[:200])
+    verify("расшифровка пеней видна: ставка, срок и долг",
+           "Пени 20 % за просрочку" in charges_text
+           and "срок 01.09.2026" in charges_text,
+           charges_text[:300])
+    verify("у просроченного начисления виден срок оплаты",
+           "Оплатить до 01.09.2026" in charges_text, "")
+
     browser.close()
 
 print()

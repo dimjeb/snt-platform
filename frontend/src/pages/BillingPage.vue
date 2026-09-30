@@ -54,6 +54,12 @@
 
       <!-- Начисления -->
       <q-tab-panel name="charges" class="q-pa-none">
+        <q-banner v-if="chargesTruncated" dense class="bg-orange-2 q-mb-sm rounded-borders">
+          <template #avatar><q-icon name="warning" color="orange-9" /></template>
+          Показаны первые {{ charges.length }} начислений из {{ chargesTotal }}.
+          Остальные в список не поместились — выгрузите ведомость на странице
+          «Отчёты», там все.
+        </q-banner>
         <q-list separator bordered rounded>
           <q-item v-for="c in charges" :key="c.id">
             <q-item-section>
@@ -79,6 +85,10 @@
 
       <!-- Платежи -->
       <q-tab-panel name="payments" class="q-pa-none">
+        <q-banner v-if="paymentsTruncated" dense class="bg-orange-2 q-mb-sm rounded-borders">
+          <template #avatar><q-icon name="warning" color="orange-9" /></template>
+          Показаны первые {{ payments.length }} платежей из {{ paymentsTotal }}.
+        </q-banner>
         <q-btn
           v-if="auth.isTreasurer || auth.isChairman"
           color="green-8" icon="add" label="Внести платёж"
@@ -258,6 +268,13 @@ const selectedPeriod = ref(null)
 const debtSummary = ref([])
 const charges = ref([])
 const payments = ref([])
+// Сколько записей за период есть всего. Список тянется страницей, и без
+// этого числа он молча обрывался: казначей с полутора сотнями участков
+// видел часть начислений и был уверен, что видит все.
+const chargesTotal = ref(0)
+const paymentsTotal = ref(0)
+const chargesTruncated = computed(() => chargesTotal.value > charges.value.length)
+const paymentsTruncated = computed(() => paymentsTotal.value > payments.value.length)
 const actionLoading = ref(false)
 const bulkMembershipDialog = ref(false)
 const bulkTargetDialog = ref(false)
@@ -316,12 +333,17 @@ async function onPeriodChange(pid) {
   if (!pid) return
   const [debt, ch, pay] = await Promise.all([
     api.get(`/billing/periods/${pid}/debt_summary/`),
-    api.get(`/billing/charges/?period=${pid}&page_size=100`),
-    api.get(`/billing/payments/?period=${pid}&page_size=100`),
+    // 500 — предел, который разрешает StandardPagination. Больше одним
+    // запросом не отдадут, поэтому ниже сверяем длину с count и, если
+    // не влезло, говорим об этом вслух.
+    api.get(`/billing/charges/?period=${pid}&page_size=500`),
+    api.get(`/billing/payments/?period=${pid}&page_size=500`),
   ])
   debtSummary.value = debt.data
   charges.value = ch.data.results || ch.data
   payments.value = pay.data.results || pay.data
+  chargesTotal.value = ch.data.count ?? charges.value.length
+  paymentsTotal.value = pay.data.count ?? payments.value.length
   chargeOptions.value = (ch.data.results || ch.data).map((c) => ({
     label: `Уч.${c.plot_number} ${c.charge_type_name} ${formatMoney(c.amount)}₽`,
     value: c.id,
