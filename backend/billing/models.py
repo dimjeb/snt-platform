@@ -84,6 +84,16 @@ class Charge(OrgModel):
     charge_type = models.ForeignKey(
         ChargeType, on_delete=models.PROTECT, related_name="charges"
     )
+    # Заполнено только у взносов «за члена товарищества». Такое начисление
+    # всё равно привязано к участку — квитанции, сводка долгов и QR живут
+    # по участкам, — но принадлежит конкретному человеку. Без этого поля
+    # совладелец общего участка видел бы в кабинете чужой взнос и мог бы
+    # его оплатить.
+    member = models.ForeignKey(
+        "members.Member", verbose_name="Член товарищества",
+        null=True, blank=True, on_delete=models.PROTECT,
+        related_name="personal_charges",
+    )
     amount = models.DecimalField("Сумма", max_digits=12, decimal_places=2)
     description = models.CharField("Описание", max_length=500, blank=True)
     due_date = models.DateField("Оплатить до", null=True, blank=True)

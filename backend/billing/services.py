@@ -15,6 +15,27 @@ BASIS_CHOICES = (BASIS_FLAT, BASIS_PER_SOTKA)
 
 KOPEK = Decimal("0.01")
 
+# Кому выставляется целевой взнос
+SCOPE_PLOT = "plot"        # на каждый участок
+SCOPE_MEMBER = "member"    # один раз на члена, сколько бы участков у него ни было
+SCOPE_CHOICES = (SCOPE_PLOT, SCOPE_MEMBER)
+
+
+def _plot_sort_key(number):
+    """
+    Естественный порядок номеров участков: 2 раньше 10, «12а» после 12.
+
+    Номер — строка, и простое сравнение строк ставит 10 перед 2. Здесь
+    это важно не для красоты: по этому порядку выбирается участок, к
+    которому привязывается взнос члена, и выбор должен быть предсказуем.
+    """
+    import re
+
+    found = re.match(r"\D*(\d+)(.*)", number or "")
+    if not found:
+        return (10 ** 9, number or "")
+    return (int(found.group(1)), found.group(2))
+
 
 def _amount_for(plot, *, basis, amount, rate):
     """
@@ -142,10 +163,15 @@ def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
                           basis: str = BASIS_FLAT,
                           rate: Decimal = None,
                           due_date=None,
-                          penalty_percent: Decimal = None) -> dict:
+                          penalty_percent: Decimal = None,
+                          scope: str = SCOPE_PLOT) -> dict:
     """
     Создаёт целевые взносы.
     plot_ids=None — для всех участков организации.
+
+    scope="plot" — на каждый участок;
+    scope="member" — один раз на каждого члена товарищества, сколько бы
+    участков у него ни было (см. _create_member_target_charges).
 
     basis="flat" — amount на каждый участок;
     basis="per_sotka" — rate ₽ за сотку × площадь участка.
@@ -159,6 +185,13 @@ def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
     номера таких участков возвращаются отдельно.
     """
     org = period.organization
+
+    if scope == SCOPE_MEMBER:
+        return _create_member_target_charges(
+            period, charge_type, amount=amount, plot_ids=plot_ids,
+            description=description, due_date=due_date,
+            penalty_percent=penalty_percent,
+        )
 
     qs = Plot.objects.filter(organization=org).prefetch_related("ownerships")
     if plot_ids:
@@ -174,7 +207,12 @@ def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
             continue
         if not any(o.date_to is None for o in plot.ownerships.all()):
             no_owner.append(plot.number)
-        if not Charge.objects.filter(period=period, plot=plot, charge_type=charge_type).exists():
+        # Сверяем только с начислениями «за участок»: взнос члена,
+        # привязанный к этому же участку, — другое начисление, и из-за
+        # него участок не должен остаться без своего.
+        if not Charge.objects.filter(period=period, plot=plot,
+                                     charge_type=charge_type,
+                                     member__isnull=True).exists():
             charges.append(
                 Charge(
                     organization=org,
@@ -195,7 +233,74 @@ def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
         spend_all_credits(org)
 
     return {"created": len(charges), "no_owner": sorted(no_owner),
-            "skipped_no_area": sorted(no_area)}
+            "skipped_no_area": sorted(no_area), "scope": SCOPE_PLOT}
+
+
+def _create_member_target_charges(period, charge_type, *, amount, plot_ids,
+                                  description, due_date, penalty_percent):
+    """
+    Целевой взнос «за члена»: один на человека.
+
+    Член с тремя участками платит один раз, а не три. Совладельцы
+    общего участка, если оба члены товарищества, платят каждый за себя.
+
+    Начисление привязывается к участку — квитанции, сводка долгов и QR
+    работают по участкам, — а именно к первому по номеру из участков
+    человека (из выбранных, если выбраны). Поле member говорит, чей это
+    взнос: по нему кабинет не показывает его совладельцу.
+
+    По соткам «за члена» не считаем: площадь — свойство участка, и у
+    совладельцев одна и та же площадь посчиталась бы дважды. Сериализатор
+    не пропускает такую комбинацию, здесь amount всегда фиксированный.
+    """
+    from members.models import PlotOwnership
+
+    org = period.organization
+    ownerships = (
+        PlotOwnership.objects
+        .filter(organization=org, date_to__isnull=True)
+        .select_related("member", "plot")
+    )
+    plots = Plot.objects.filter(organization=org)
+    if plot_ids:
+        ownerships = ownerships.filter(plot_id__in=plot_ids)
+        plots = plots.filter(pk__in=plot_ids)
+
+    by_member = {}
+    for ownership in ownerships:
+        by_member.setdefault(ownership.member, []).append(ownership.plot)
+
+    # Участки без собственника: взыскать не с кого. Называем их, чтобы
+    # казначей не думал, что охватил всех.
+    owned = {plot.pk for member_plots in by_member.values() for plot in member_plots}
+    no_owner = sorted(
+        (p.number for p in plots if p.pk not in owned), key=_plot_sort_key,
+    )
+
+    charges = []
+    for member, member_plots in by_member.items():
+        if Charge.objects.filter(period=period, charge_type=charge_type,
+                                 member=member).exists():
+            continue
+        plot = min(member_plots, key=lambda p: _plot_sort_key(p.number))
+        charges.append(Charge(
+            organization=org,
+            period=period,
+            plot=plot,
+            member=member,
+            charge_type=charge_type,
+            amount=amount,
+            description=description or "Взнос с члена товарищества",
+            **_penalty_fields(due_date, penalty_percent),
+        ))
+
+    with transaction.atomic():
+        Charge.objects.bulk_create(charges)
+        spend_all_credits(org)
+
+    return {"created": len(charges), "no_owner": no_owner,
+            "skipped_no_area": [], "scope": SCOPE_MEMBER,
+            "members": len(by_member)}
 
 
 def apply_penalties(organization, *, today=None, user=None) -> dict:
@@ -277,6 +382,9 @@ def apply_penalties(organization, *, today=None, user=None) -> dict:
             organization=organization,
             period=charge.period,
             plot=charge.plot,
+            # Пени за взнос члена — тоже его личные: совладелец участка
+            # не должен видеть их в своём кабинете.
+            member=charge.member,
             charge_type=charge_type,
             amount=amount,
             penalty_for=charge,

@@ -2,7 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from core.permissions import (
-    IsOrgMember, IsTreasurer, OrgQuerysetMixin, require_org,
+    IsTreasurer, OrgQuerysetMixin, require_org,
 )
 from .models import ChargeType, BillingPeriod, Charge, Payment
 from .serializers import (
@@ -98,6 +98,7 @@ class BillingPeriodViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
             period, charge_type,
             amount=s.validated_data["amount"],
             plot_ids=s.validated_data.get("plot_ids"),
+            scope=s.validated_data["scope"],
             description=s.validated_data["description"],
             basis=s.validated_data["basis"],
             rate=s.validated_data["rate"],
@@ -119,10 +120,13 @@ class ChargeViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     serializer_class = ChargeSerializer
     filterset_fields = ["period", "plot", "charge_type"]
 
-    def get_permissions(self):
-        if self.action in ("list", "retrieve"):
-            return [IsOrgMember()]
-        return [IsTreasurer()]
+    # Раньше list и retrieve были открыты любому члену товарищества
+    # (IsOrgMember), и через API он читал начисления всех соседей: номера
+    # участков, суммы, долги, а с появлением взносов «за члена» — ещё и
+    # чьи они. Интерфейсу члена этот список не нужен: свой долг кабинет
+    # берёт из /payments/my-debt/, где выборка идёт от его собственных
+    # участков. Страница «Начисления» открыта только правлению.
+    permission_classes = [IsTreasurer]
 
     def perform_create(self, serializer):
         serializer.save(organization=require_org(self.request))
