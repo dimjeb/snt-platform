@@ -134,16 +134,17 @@
             v-model="file"
             label="Файл выписки"
             outlined
-            accept=".txt,.1c"
+            accept=".txt,.1c,.xlsx"
             :error="!!uploadError"
             :error-message="uploadError"
           >
             <template #prepend><q-icon name="attach_file" /></template>
           </q-file>
           <div class="text-caption text-grey-7">
-            Нужен файл обмена с 1С из банк-клиента — обычно называется
-            <code>kl_to_1c.txt</code>. В Сбербанк Бизнес и ВТБ Бизнес это
-            выгрузка «Обмен с 1С» за нужный период.
+            Подойдёт либо файл обмена с 1С (<code>kl_to_1c.txt</code> —
+            в Сбербанк Бизнес и ВТБ Бизнес это выгрузка «Обмен с 1С»),
+            либо обычная выписка по счёту в Excel (<code>.xlsx</code>),
+            которую ВТБ Бизнес отдаёт кнопкой «Выписка».
           </div>
         </q-card-section>
         <q-card-actions align="right">

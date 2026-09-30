@@ -20,7 +20,7 @@ from django.utils import timezone
 from .credits import add_credit
 from .matching import MATCH_NONE, MATCH_PLOT, match_documents
 from .models import BankStatement, BankTransaction, Charge, Payment
-from .statement import parse_1c_statement
+from .statement import parse_statement
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +33,9 @@ def import_statement(organization, *, raw: bytes, file_name: str, user=None):
     """Разобрать файл и сохранить строки. Деньги не трогаются."""
     from members.models import Member, Plot
 
-    parsed = parse_1c_statement(raw, our_account=organization.bank_account)
+    parsed = parse_statement(
+        raw, file_name=file_name, our_account=organization.bank_account
+    )
 
     if organization.bank_account and parsed.account:
         ours = "".join(ch for ch in organization.bank_account if ch.isdigit())
