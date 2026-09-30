@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from .services import BASIS_FLAT, BASIS_PER_SOTKA
 from .models import BankStatement, BankTransaction, ChargeType, BillingPeriod, Charge, Payment
 
 
@@ -40,20 +41,56 @@ class ChargeSerializer(serializers.ModelSerializer):
         read_only_fields = ("created_at", "updated_at")
 
 
-class BulkMembershipChargeSerializer(serializers.Serializer):
-    """Запрос на массовое создание членских взносов. Период — из URL."""
-    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+class BulkChargeBasisMixin(serializers.Serializer):
+    """
+    Общая часть запросов на массовое начисление: чем считаем.
+
+    flat — одна сумма на участок, per_sotka — ставка за сотку.
+    Поля amount и rate необязательны по отдельности, но ровно одно из
+    них обязано прийти: проверяет validate. Иначе при опечатке во фронте
+    ушло бы начисление на нулевую сумму по всем участкам, и заметили бы
+    это уже по жалобам садоводов.
+    """
+    basis = serializers.ChoiceField(
+        choices=[(BASIS_FLAT, "Фиксированная сумма"),
+                 (BASIS_PER_SOTKA, "Ставка за сотку")],
+        required=False, default=BASIS_FLAT,
+    )
+    amount = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, allow_null=True
+    )
+    rate = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, allow_null=True
+    )
     description = serializers.CharField(max_length=500, required=False, default="")
 
+    def validate(self, data):
+        basis = data.get("basis", BASIS_FLAT)
+        if basis == BASIS_PER_SOTKA:
+            if not data.get("rate") or data["rate"] <= 0:
+                raise serializers.ValidationError(
+                    {"rate": "Укажите ставку за сотку больше нуля."}
+                )
+            data["amount"] = None
+        else:
+            if data.get("amount") is None or data["amount"] <= 0:
+                raise serializers.ValidationError(
+                    {"amount": "Укажите сумму взноса больше нуля."}
+                )
+            data["rate"] = None
+        return data
 
-class BulkTargetChargeSerializer(serializers.Serializer):
+
+class BulkMembershipChargeSerializer(BulkChargeBasisMixin):
+    """Запрос на массовое создание членских взносов. Период — из URL."""
+
+
+class BulkTargetChargeSerializer(BulkChargeBasisMixin):
     """Запрос на создание целевых взносов. Период — из URL."""
     charge_type_id = serializers.IntegerField()
-    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
     plot_ids = serializers.ListField(
         child=serializers.IntegerField(), required=False, allow_null=True
     )
-    description = serializers.CharField(max_length=500, required=False, default="")
 
 
 class BankTransactionSerializer(serializers.ModelSerializer):

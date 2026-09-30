@@ -87,12 +87,30 @@
     </q-tab-panels>
 
     <!-- Диалог: членский взнос -->
-    <q-dialog v-model="bulkMembershipDialog" persistent>
-      <q-card style="min-width:320px">
+    <q-dialog v-model="bulkMembershipDialog" persistent @show="loadPlots">
+      <q-card style="min-width:340px;max-width:480px">
         <q-card-section class="text-h6">Начислить членские взносы</q-card-section>
         <q-card-section>
           <q-form class="q-gutter-sm">
-            <q-input v-model="membershipForm.amount" label="Сумма (₽) *" outlined dense type="number" />
+            <q-option-group
+              v-model="membershipForm.basis"
+              :options="basisOptions"
+              color="green-8" dense
+            />
+            <q-input
+              v-if="membershipForm.basis === 'flat'"
+              v-model="membershipForm.amount"
+              label="Сумма на участок (₽) *" outlined dense type="number"
+            />
+            <q-input
+              v-else
+              v-model="membershipForm.rate"
+              label="Ставка за сотку (₽) *" outlined dense type="number"
+            />
+            <div
+              v-if="membershipForm.basis === 'per_sotka'"
+              class="text-caption text-grey-8 charge-preview"
+            >{{ membershipPreview }}</div>
             <q-input v-model="membershipForm.description" label="Описание" outlined dense />
           </q-form>
         </q-card-section>
@@ -104,7 +122,7 @@
     </q-dialog>
 
     <!-- Диалог: целевой взнос -->
-    <q-dialog v-model="bulkTargetDialog" persistent>
+    <q-dialog v-model="bulkTargetDialog" persistent @show="loadPlots">
       <q-card style="min-width:340px;max-width:480px">
         <q-card-section class="text-h6">Начислить целевой взнос</q-card-section>
         <q-card-section class="q-gutter-sm">
@@ -121,7 +139,25 @@
             @filter="filterChargeTypes"
             @new-value="createChargeType"
           />
-          <q-input v-model="targetForm.amount" label="Сумма на участок (₽) *" outlined dense type="number" />
+          <q-option-group
+            v-model="targetForm.basis"
+            :options="basisOptions"
+            color="blue-8" dense
+          />
+          <q-input
+            v-if="targetForm.basis === 'flat'"
+            v-model="targetForm.amount"
+            label="Сумма на участок (₽) *" outlined dense type="number"
+          />
+          <q-input
+            v-else
+            v-model="targetForm.rate"
+            label="Ставка за сотку (₽) *" outlined dense type="number"
+          />
+          <div
+            v-if="targetForm.basis === 'per_sotka'"
+            class="text-caption text-grey-8 charge-preview"
+          >{{ targetPreview }}</div>
           <q-input v-model="targetForm.description" label="Описание" outlined dense />
 
           <q-option-group
@@ -174,7 +210,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useQuasar } from 'quasar'
 import { useAuthStore } from 'stores/auth'
 import api from 'src/api/client'
@@ -192,8 +228,17 @@ const actionLoading = ref(false)
 const bulkMembershipDialog = ref(false)
 const bulkTargetDialog = ref(false)
 const paymentDialog = ref(false)
-const membershipForm = ref({ amount: '', description: '' })
-const targetForm = ref({ charge_type_id: null, amount: '', description: '', plot_ids: [] })
+// Членские в большинстве товариществ считают от площади, целевые чаще
+// одной суммой на участок — отсюда разные значения по умолчанию.
+const membershipForm = ref({ basis: 'per_sotka', amount: '', rate: '', description: '' })
+const targetForm = ref({
+  charge_type_id: null, basis: 'flat', amount: '', rate: '',
+  description: '', plot_ids: [],
+})
+const basisOptions = [
+  { label: 'Фиксированная сумма на участок', value: 'flat' },
+  { label: 'Ставка за сотку', value: 'per_sotka' },
+]
 const targetScope = ref('all')
 const allChargeTypes = ref([])
 const chargeTypeOptions = ref([])
@@ -311,9 +356,43 @@ async function loadPlots() {
       label: `Уч. №${p.number}${p.current_owner ? ' — ' + p.current_owner.full_name : ''}`,
       value: p.id,
       number: String(p.number),
+      area: p.area_sotok === null ? 0 : Number(p.area_sotok),
+      hasOwner: !!p.current_owner,
     }))
   } finally { plotsLoading.value = false }
 }
+
+// Предварительный расчёт до нажатия «Начислить». Считаем ту же формулу,
+// что и сервер, чтобы казначей увидел порядок суммы и — главное —
+// сколько участков останется без начисления из-за пустой площади.
+// Сервер всё равно пересчитает сам: это подсказка, а не источник правды.
+function areaPreview(rate, plots) {
+  if (!plots.length) return 'Список участков ещё загружается…'
+  const value = Number(rate)
+  if (!value || value <= 0) return 'Укажите ставку за сотку — покажу расчёт.'
+  const withArea = plots.filter((p) => p.area > 0)
+  const totalArea = withArea.reduce((sum, p) => sum + p.area, 0)
+  const missing = plots.length - withArea.length
+  let text = `Участков с заполненной площадью: ${withArea.length} из ${plots.length}.`
+    + ` Всего ${totalArea.toFixed(2)} сот.`
+    + ` Начислим ориентировочно ${formatMoney(value * totalArea)} ₽.`
+  if (missing) {
+    text += ` У ${missing} участков площадь не заполнена — им начисление не уйдёт.`
+  }
+  return text
+}
+
+const membershipPreview = computed(
+  // Членский взнос начисляется только участкам с текущим собственником:
+  // на остальные сервер его не выпишет, и в расчёт их включать нечестно.
+  () => areaPreview(membershipForm.value.rate, allPlots.value.filter((p) => p.hasOwner)),
+)
+
+const targetPreview = computed(() => {
+  const ids = targetScope.value === 'some' ? (targetForm.value.plot_ids || []) : null
+  const plots = ids ? allPlots.value.filter((p) => ids.includes(p.value)) : allPlots.value
+  return areaPreview(targetForm.value.rate, plots)
+})
 
 function filterPlots(val, update) {
   loadPlots().then(() => {
@@ -331,8 +410,12 @@ async function createTarget() {
     $q.notify({ type: 'warning', message: 'Выберите вид начисления' })
     return
   }
-  if (!Number(targetForm.value.amount)) {
-    $q.notify({ type: 'warning', message: 'Укажите сумму' })
+  const targetByArea = targetForm.value.basis === 'per_sotka'
+  if (!Number(targetByArea ? targetForm.value.rate : targetForm.value.amount)) {
+    $q.notify({
+      type: 'warning',
+      message: targetByArea ? 'Укажите ставку за сотку' : 'Укажите сумму',
+    })
     return
   }
   const plotIds = targetScope.value === 'some' ? targetForm.value.plot_ids : null
@@ -346,7 +429,13 @@ async function createTarget() {
       `/billing/periods/${selectedPeriod.value}/create_target_charges/`,
       {
         charge_type_id: targetForm.value.charge_type_id,
-        amount: targetForm.value.amount,
+        basis: targetForm.value.basis,
+        // Шлём только то поле, которое относится к выбранному способу:
+        // сериализатор вторым всё равно не воспользуется, а лишнее
+        // значение в теле запроса путает при разборе логов.
+        ...(targetByArea
+          ? { rate: targetForm.value.rate }
+          : { amount: targetForm.value.amount }),
         description: targetForm.value.description,
         // plot_ids не шлём вовсе, если начисляем всем: сериализатор
         // трактует отсутствие поля как «все участки».
@@ -354,11 +443,15 @@ async function createTarget() {
       },
     )
     bulkTargetDialog.value = false
-    targetForm.value = { charge_type_id: null, amount: '', description: '', plot_ids: [] }
+    targetForm.value = {
+      charge_type_id: null, basis: 'flat', amount: '', rate: '',
+      description: '', plot_ids: [],
+    }
     targetScope.value = 'all'
     await onPeriodChange(selectedPeriod.value)
     notifyCharged(data.created, data.no_owner,
-                  'Начисление есть, но в личном кабинете его никто не увидит')
+                  'Начисление есть, но в личном кабинете его никто не увидит',
+                  data.skipped_no_area)
   } catch (e) {
     $q.notify({ type: 'negative', message: errText(e, 'Не удалось начислить') })
   } finally { actionLoading.value = false }
@@ -368,31 +461,59 @@ async function createTarget() {
 // гаснет само. Начисление на такой участок в личный кабинет не попадёт:
 // показывать его некому. Молчать об этом нельзя — казначей уверен, что
 // начислил, а человек ничего не видит и идёт разбираться.
-function notifyCharged(created, noOwner, warning) {
+function notifyCharged(created, noOwner, warning, noArea) {
   const orphans = noOwner || []
-  if (!orphans.length) {
+  // Участки без заполненной площади при расчёте по соткам: им сумму
+  // считать не из чего, начисления не будет вообще. Это не то же
+  // самое, что участок без собственника, и сказать надо отдельно.
+  const arealess = noArea || []
+  if (!orphans.length && !arealess.length) {
     $q.notify({ type: 'positive', message: `Начислено участков: ${created}` })
     return
+  }
+  let message = `Начислено участков: ${created}. `
+  if (orphans.length) {
+    message += `Без собственника: ${orphans.length} (${orphans.join(', ')}). ${warning} `
+  }
+  if (arealess.length) {
+    message += `Без заполненной площади: ${arealess.length} (${arealess.join(', ')}). `
+      + 'Им взнос не начислен — впишите площадь на странице «Участки» и повторите.'
   }
   $q.notify({
     type: 'warning',
     timeout: 0,
     multiLine: true,
     actions: [{ label: 'Понятно', color: 'white' }],
-    message: `Начислено участков: ${created}. `
-      + `Без собственника: ${orphans.length} (${orphans.join(', ')}). `
-      + warning,
+    message: message.trim(),
   })
 }
 
 async function createMembership() {
+  const byArea = membershipForm.value.basis === 'per_sotka'
+  if (!Number(byArea ? membershipForm.value.rate : membershipForm.value.amount)) {
+    $q.notify({
+      type: 'warning',
+      message: byArea ? 'Укажите ставку за сотку' : 'Укажите сумму',
+    })
+    return
+  }
   actionLoading.value = true
   try {
-    const { data } = await api.post(`/billing/periods/${selectedPeriod.value}/create_membership_charges/`, membershipForm.value)
+    const { data } = await api.post(
+      `/billing/periods/${selectedPeriod.value}/create_membership_charges/`,
+      {
+        basis: membershipForm.value.basis,
+        ...(byArea
+          ? { rate: membershipForm.value.rate }
+          : { amount: membershipForm.value.amount }),
+        description: membershipForm.value.description,
+      },
+    )
     bulkMembershipDialog.value = false
     await onPeriodChange(selectedPeriod.value)
     notifyCharged(data.created, data.skipped_no_owner,
-                  'Им взнос не начислен — закрепите участок за членом СНТ')
+                  'Им взнос не начислен — закрепите участок за членом СНТ',
+                  data.skipped_no_area)
   } catch (e) { $q.notify({ type: 'negative', message: errText(e, 'Ошибка') }) }
   finally { actionLoading.value = false }
 }
@@ -413,3 +534,15 @@ onMounted(async () => {
   if (auth.isChairman || auth.isTreasurer) await loadChargeTypes()
 })
 </script>
+
+<style scoped>
+/* Предварительный расчёт по соткам: заметная плашка, а не сноска —
+   именно здесь видно, скольким участкам начисление не уйдёт. */
+.charge-preview {
+  background: rgba(0, 0, 0, 0.04);
+  border-left: 3px solid var(--q-primary);
+  border-radius: 4px;
+  padding: 8px 10px;
+  line-height: 1.4;
+}
+</style>

@@ -1,23 +1,64 @@
 """
 Бизнес-логика billing: массовое создание начислений.
 """
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from django.db import transaction
 from django.db.models import Exists, OuterRef
 from .credits import spend_all_credits
 from .models import BillingPeriod, Charge, ChargeType
 from members.models import Plot
 
+# Как считается сумма взноса
+BASIS_FLAT = "flat"              # одинаково на каждый участок
+BASIS_PER_SOTKA = "per_sotka"    # ставка за сотку × площадь участка
+BASIS_CHOICES = (BASIS_FLAT, BASIS_PER_SOTKA)
 
-def create_membership_charges(period: BillingPeriod, amount: Decimal,
-                              description: str = "") -> dict:
+KOPEK = Decimal("0.01")
+
+
+def _amount_for(plot, *, basis, amount, rate):
+    """
+    Сумма начисления для участка.
+
+    Возвращает None, если начислять нечего: при расчёте по соткам у
+    участка не заполнена площадь. Такой участок пропускается, а его
+    номер возвращается вызывающему — молча не начислить нельзя,
+    казначей будет уверен, что охватил всех.
+    """
+    if basis != BASIS_PER_SOTKA:
+        return amount
+    area = plot.area_sotok
+    if area is None or area <= 0:
+        return None
+    # Округляем каждое начисление до копейки по правилу «половина вверх»:
+    # 1200 ₽ × 6.33 сотки = 7596.00, а 1200 × 6.335 = 7602.00, и банк
+    # с долями копеек работать не умеет.
+    return (Decimal(rate) * area).quantize(KOPEK, rounding=ROUND_HALF_UP)
+
+
+def _auto_description(basis, rate, plot):
+    """Расшифровка расчёта, если казначей не написал своё описание."""
+    if basis != BASIS_PER_SOTKA:
+        return ""
+    return f"{rate} ₽ за сотку × {plot.area_sotok} сот."
+
+
+def create_membership_charges(period: BillingPeriod, amount: Decimal = None,
+                              description: str = "",
+                              basis: str = BASIS_FLAT,
+                              rate: Decimal = None) -> dict:
     """
     Массово создаёт начисления членских взносов для всех активных участков периода.
 
-    Возвращает {"created": сколько создано, "skipped_no_owner": [номера]}.
+    basis="flat" — amount на каждый участок;
+    basis="per_sotka" — rate ₽ за сотку × площадь участка.
+
+    Возвращает {"created": сколько создано, "skipped_no_owner": [номера],
+    "skipped_no_area": [номера]}.
     Участки без текущего собственника пропускаются — начислять некому, —
     но молчать об этом нельзя: казначей уверен, что начислил всем, а
-    часть участков осталась без взноса.
+    часть участков осталась без взноса. Так же и с участками без
+    заполненной площади при расчёте по соткам.
     """
     org = period.organization
     charge_type, _ = ChargeType.objects.get_or_create(
@@ -48,7 +89,12 @@ def create_membership_charges(period: BillingPeriod, amount: Decimal,
     )
 
     charges = []
+    no_area = []
     for plot in plots:
+        plot_amount = _amount_for(plot, basis=basis, amount=amount, rate=rate)
+        if plot_amount is None:
+            no_area.append(plot.number)
+            continue
         # Не дублировать, если уже есть
         if not Charge.objects.filter(period=period, plot=plot, charge_type=charge_type).exists():
             charges.append(
@@ -57,8 +103,8 @@ def create_membership_charges(period: BillingPeriod, amount: Decimal,
                     period=period,
                     plot=plot,
                     charge_type=charge_type,
-                    amount=amount,
-                    description=description,
+                    amount=plot_amount,
+                    description=description or _auto_description(basis, rate, plot),
                 )
             )
 
@@ -69,17 +115,24 @@ def create_membership_charges(period: BillingPeriod, amount: Decimal,
         # деньги товарищество уже получило.
         spend_all_credits(org)
 
-    return {"created": len(charges), "skipped_no_owner": skipped}
+    return {"created": len(charges), "skipped_no_owner": skipped,
+            "skipped_no_area": sorted(no_area)}
 
 
 def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
-                          amount: Decimal, plot_ids: list | None = None,
-                          description: str = "") -> dict:
+                          amount: Decimal = None, plot_ids: list | None = None,
+                          description: str = "",
+                          basis: str = BASIS_FLAT,
+                          rate: Decimal = None) -> dict:
     """
     Создаёт целевые взносы.
     plot_ids=None — для всех участков организации.
 
-    Возвращает {"created": сколько создано, "no_owner": [номера]}.
+    basis="flat" — amount на каждый участок;
+    basis="per_sotka" — rate ₽ за сотку × площадь участка.
+
+    Возвращает {"created": сколько создано, "no_owner": [номера],
+    "skipped_no_area": [номера]}.
     В отличие от членских, целевой взнос начисляется и на участок без
     текущего собственника: он может быть решением общего собрания по
     всем участкам, включая заброшенные. Но такое начисление ни в одном
@@ -94,7 +147,12 @@ def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
 
     charges = []
     no_owner = []
+    no_area = []
     for plot in qs:
+        plot_amount = _amount_for(plot, basis=basis, amount=amount, rate=rate)
+        if plot_amount is None:
+            no_area.append(plot.number)
+            continue
         if not any(o.date_to is None for o in plot.ownerships.all()):
             no_owner.append(plot.number)
         if not Charge.objects.filter(period=period, plot=plot, charge_type=charge_type).exists():
@@ -104,8 +162,8 @@ def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
                     period=period,
                     plot=plot,
                     charge_type=charge_type,
-                    amount=amount,
-                    description=description,
+                    amount=plot_amount,
+                    description=description or _auto_description(basis, rate, plot),
                 )
             )
 
@@ -116,7 +174,8 @@ def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
         # деньги товарищество уже получило.
         spend_all_credits(org)
 
-    return {"created": len(charges), "no_owner": sorted(no_owner)}
+    return {"created": len(charges), "no_owner": sorted(no_owner),
+            "skipped_no_area": sorted(no_area)}
 
 
 def get_debt_summary(organization, period=None):
