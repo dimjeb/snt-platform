@@ -10,6 +10,7 @@ import uuid
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
+from django.db.models import Q
 from django.http import HttpResponse
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
@@ -64,6 +65,10 @@ def _member_charges(request):
             plot__ownerships__member=member,
             plot__ownerships__date_to__isnull=True,
         )
+        # Взнос «за члена» привязан к участку, но принадлежит одному
+        # человеку. Совладелец общего участка его не видит и оплатить
+        # не может — иначе закрыл бы чужой долг своими деньгами.
+        .filter(Q(member__isnull=True) | Q(member=member))
         .select_related("charge_type", "period", "plot")
         .prefetch_related("payments")
         .distinct()

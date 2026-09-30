@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from rest_framework import serializers
-from .services import BASIS_FLAT, BASIS_PER_SOTKA
+from .services import BASIS_FLAT, BASIS_PER_SOTKA, SCOPE_MEMBER, SCOPE_PLOT
 from .models import BankStatement, BankTransaction, ChargeType, BillingPeriod, Charge, Payment
 
 
@@ -37,6 +37,10 @@ class ChargeSerializer(serializers.ModelSerializer):
     period_label = serializers.CharField(source="period.__str__", read_only=True)
     payments = PaymentSerializer(many=True, read_only=True)
     is_overdue = serializers.BooleanField(read_only=True)
+    # Для взносов «за члена»: чей это взнос. Список начислений открыт только
+    # правлению (ChargeViewSet.permission_classes), рядовой член его не видит.
+    member_name = serializers.CharField(source="member.full_name", read_only=True,
+                                        default=None)
 
     class Meta:
         model = Charge
@@ -104,6 +108,23 @@ class BulkTargetChargeSerializer(BulkChargeBasisMixin):
     plot_ids = serializers.ListField(
         child=serializers.IntegerField(), required=False, allow_null=True
     )
+    scope = serializers.ChoiceField(
+        choices=[(SCOPE_PLOT, "За участок"), (SCOPE_MEMBER, "За члена")],
+        required=False, default=SCOPE_PLOT,
+    )
+
+    def validate(self, data):
+        data = super().validate(data)
+        if (data.get("scope") == SCOPE_MEMBER
+                and data.get("basis") == BASIS_PER_SOTKA):
+            # Площадь — свойство участка. «За члена по соткам» у
+            # совладельцев посчитало бы одну и ту же площадь дважды, а у
+            # человека с тремя участками — неясно, по какому из них.
+            raise serializers.ValidationError({
+                "basis": "Взнос «за члена» бывает только фиксированной "
+                         "суммой: по соткам считается за участок.",
+            })
+        return data
 
 
 class BankTransactionSerializer(serializers.ModelSerializer):

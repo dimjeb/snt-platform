@@ -398,6 +398,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("ПЕНИ ЗА ПРОСРОЧКУ"))
         self._check_penalties(c, CH, ME)
 
+        # ---------------- Целевой «за члена» ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("ЦЕЛЕВОЙ ВЗНОС ЗА ЧЛЕНА"))
+        self._check_target_per_member(c, CH, ME)
+
         # ---------------- Электроэнергия ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("ЭЛЕКТРОЭНЕРГИЯ"))
         self._check_electricity_gaps()
@@ -851,6 +855,119 @@ class Command(BaseCommand):
         r = c.post("/api/billing/charges/apply_penalties/", **member_headers)
         self.verify("рядовой член пени начислить не может",
                     r.status_code == 403, f"HTTP {r.status_code}")
+
+    def _check_target_per_member(self, c, chairman_headers, member_headers):
+        """
+        Целевой взнос «за члена», а не «за участок».
+
+        Ломается такое обычно в трёх местах: человек с несколькими
+        участками платит несколько раз; совладельцы общего участка платят
+        один взнос на двоих или видят взносы друг друга; повторный запуск
+        выписывает всё заново.
+        """
+        from datetime import date
+        from decimal import Decimal
+        from types import SimpleNamespace
+
+        from billing.models import BillingPeriod, Charge, ChargeType
+        from billing.services import (SCOPE_MEMBER, apply_penalties,
+                                      create_target_charges)
+        from members.models import Member, Plot, PlotOwnership
+        from organizations.models import Organization
+        from payments.views import _member_charges
+
+        org = Organization.objects.create(name="Проверка «за члена»", is_active=True)
+        period = BillingPeriod.objects.create(organization=org, year=2026, month=7)
+        ctype = ChargeType.objects.create(
+            organization=org, category=ChargeType.TYPE_TARGET, name="На дорогу",
+        )
+
+        def own(member, plot):
+            PlotOwnership.objects.create(organization=org, plot=plot, member=member,
+                                         date_from=date(2026, 1, 1))
+
+        many = Member.objects.create(organization=org, last_name="Многоучастков",
+                                     first_name="М")
+        # 10-й создан раньше 2-го: ни порядок в базе, ни строковый порядок
+        # номеров не подскажут, что взнос должен лечь на участок 2.
+        plot10 = Plot.objects.create(organization=org, number="10")
+        plot2 = Plot.objects.create(organization=org, number="2")
+        own(many, plot10)
+        own(many, plot2)
+
+        shared = Plot.objects.create(organization=org, number="3")
+        co_a = Member.objects.create(organization=org, last_name="Совладелец",
+                                     first_name="А")
+        co_b = Member.objects.create(organization=org, last_name="Совладелец",
+                                     first_name="Б")
+        own(co_a, shared)
+        own(co_b, shared)
+
+        Plot.objects.create(organization=org, number="4")   # без собственника
+
+        result = create_target_charges(period, ctype, amount=Decimal("1000.00"),
+                                       scope=SCOPE_MEMBER)
+        self.verify("взнос «за члена» выписан каждому члену один раз",
+                    result["created"] == 3, result)
+        mine = Charge.objects.filter(member=many)
+        self.verify("у человека с двумя участками один взнос, а не два",
+                    mine.count() == 1, mine.count())
+        self.verify("взнос лёг на первый по номеру участок (2, а не 10)",
+                    mine.first() is not None and mine.first().plot_id == plot2.pk,
+                    mine.first().plot.number if mine.first() else None)
+        self.verify("совладельцы общего участка платят каждый за себя",
+                    Charge.objects.filter(plot=shared).count() == 2)
+        self.verify("участок без собственника назван",
+                    result["no_owner"] == ["4"], result["no_owner"])
+
+        again = create_target_charges(period, ctype, amount=Decimal("1000.00"),
+                                      scope=SCOPE_MEMBER)
+        self.verify("повторный запуск «за члена» не задваивает",
+                    again["created"] == 0, again)
+
+        # Кабинет совладельца: свой взнос виден, взнос соседа по участку — нет.
+        request = SimpleNamespace(user=SimpleNamespace(member=co_a), org=org)
+        visible = list(_member_charges(request))
+        self.verify("совладелец видит свой взнос и не видит чужой",
+                    len(visible) == 1 and visible[0].member_id == co_a.pk,
+                    [(ch.member_id, ch.amount) for ch in visible])
+
+        # Пени за взнос члена — тоже его личные.
+        own_charge = Charge.objects.get(member=co_a)
+        own_charge.due_date = date(2026, 7, 31)
+        own_charge.save(update_fields=["due_date", "updated_at"])
+        apply_penalties(org, today=date(2026, 8, 15))
+        penalty = Charge.objects.filter(penalty_for=own_charge).first()
+        self.verify("пени за взнос члена принадлежат ему же",
+                    penalty is not None and penalty.member_id == co_a.pk,
+                    penalty.member_id if penalty else None)
+        request_b = SimpleNamespace(user=SimpleNamespace(member=co_b), org=org)
+        self.verify("совладелец не видит чужих пеней",
+                    all(ch.member_id in (None, co_b.pk)
+                        for ch in _member_charges(request_b)))
+
+        # --- через API ---
+        fixture_period = BillingPeriod.objects.filter(
+            organization=self._fixture_org).first()
+        r = c.post(
+            f"/api/billing/periods/{fixture_period.pk}/create_target_charges/",
+            data={"charge_type_id": 1, "scope": "member", "basis": "per_sotka",
+                  "rate": "100"},
+            content_type="application/json", **chairman_headers,
+        )
+        self.verify("«за члена по соткам» отклоняется с объяснением",
+                    r.status_code == 400
+                    and "за участок" in str(self._json(r) or {}),
+                    f"HTTP {r.status_code}")
+
+        # Список начислений товарищества рядовому члену закрыт: раньше
+        # через API он читал суммы и долги всех соседей.
+        r = c.get("/api/billing/charges/", **member_headers)
+        self.verify("рядовой член не видит начисления соседей",
+                    r.status_code == 403, f"HTTP {r.status_code}")
+        r = c.get("/api/billing/charges/", **chairman_headers)
+        self.verify("председатель список начислений видит",
+                    r.status_code == 200, f"HTTP {r.status_code}")
 
     def _check_electricity_gaps(self):
         """

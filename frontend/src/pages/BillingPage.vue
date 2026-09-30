@@ -64,7 +64,11 @@
           <q-item v-for="c in charges" :key="c.id">
             <q-item-section>
               <q-item-label>{{ c.charge_type_name }}</q-item-label>
-              <q-item-label caption>Уч. №{{ c.plot_number }} · {{ c.description }}</q-item-label>
+              <q-item-label caption>
+                Уч. №{{ c.plot_number }}
+                <template v-if="c.member_name"> · {{ c.member_name }}</template>
+                · {{ c.description }}
+              </q-item-label>
               <q-item-label v-if="c.due_date" caption>
                 <span :class="c.is_overdue ? 'text-negative text-weight-medium' : ''">
                   Оплатить до {{ formatDate(c.due_date) }}
@@ -174,14 +178,26 @@
             @new-value="createChargeType"
           />
           <q-option-group
+            v-model="targetForm.scope"
+            :options="scopeOptions"
+            color="blue-8" dense inline
+          />
+          <div v-if="targetForm.scope === 'member'" class="text-caption text-grey-8 charge-preview">
+            Один взнос на человека, сколько бы участков у него ни было.
+            Совладельцы общего участка платят каждый за себя.
+            По соткам «за члена» не считается — только фиксированной суммой.
+          </div>
+          <q-option-group
+            v-if="targetForm.scope === 'plot'"
             v-model="targetForm.basis"
             :options="basisOptions"
             color="blue-8" dense
           />
           <q-input
-            v-if="targetForm.basis === 'flat'"
+            v-if="targetForm.basis === 'flat' || targetForm.scope === 'member'"
             v-model="targetForm.amount"
-            label="Сумма на участок (₽) *" outlined dense type="number"
+            :label="targetForm.scope === 'member' ? 'Сумма с члена (₽) *' : 'Сумма на участок (₽) *'"
+            outlined dense type="number"
           />
           <q-input
             v-else
@@ -189,7 +205,7 @@
             label="Ставка за сотку (₽) *" outlined dense type="number"
           />
           <div
-            v-if="targetForm.basis === 'per_sotka'"
+            v-if="targetForm.scope === 'plot' && targetForm.basis === 'per_sotka'"
             class="text-caption text-grey-8 charge-preview"
           >{{ targetPreview }}</div>
           <q-input
@@ -206,10 +222,15 @@
 
           <q-option-group
             v-model="targetScope"
-            :options="[
-              { label: 'Всем участкам', value: 'all' },
-              { label: 'Выбранным участкам', value: 'some' },
-            ]"
+            :options="targetForm.scope === 'member'
+              ? [
+                { label: 'Всем членам', value: 'all' },
+                { label: 'Владельцам выбранных участков', value: 'some' },
+              ]
+              : [
+                { label: 'Всем участкам', value: 'all' },
+                { label: 'Выбранным участкам', value: 'some' },
+              ]"
             color="blue-8" dense inline
           />
           <q-select
@@ -286,9 +307,13 @@ const membershipForm = ref({
   due_date: '', penalty_percent: '20',
 })
 const targetForm = ref({
-  charge_type_id: null, basis: 'flat', amount: '', rate: '',
+  charge_type_id: null, scope: 'plot', basis: 'flat', amount: '', rate: '',
   description: '', plot_ids: [], due_date: '', penalty_percent: '20',
 })
+const scopeOptions = [
+  { label: 'За участок', value: 'plot' },
+  { label: 'За члена товарищества', value: 'member' },
+]
 const basisOptions = [
   { label: 'Фиксированная сумма на участок', value: 'flat' },
   { label: 'Ставка за сотку', value: 'per_sotka' },
@@ -517,7 +542,9 @@ async function createTarget() {
     $q.notify({ type: 'warning', message: 'Выберите вид начисления' })
     return
   }
-  const targetByArea = targetForm.value.basis === 'per_sotka'
+  // «За члена» — всегда фиксированной суммой, сервер иначе откажет.
+  const targetByArea = targetForm.value.scope === 'plot'
+    && targetForm.value.basis === 'per_sotka'
   if (!Number(targetByArea ? targetForm.value.rate : targetForm.value.amount)) {
     $q.notify({
       type: 'warning',
@@ -536,7 +563,8 @@ async function createTarget() {
       `/billing/periods/${selectedPeriod.value}/create_target_charges/`,
       {
         charge_type_id: targetForm.value.charge_type_id,
-        basis: targetForm.value.basis,
+        scope: targetForm.value.scope,
+        basis: targetByArea ? 'per_sotka' : 'flat',
         // Шлём только то поле, которое относится к выбранному способу:
         // сериализатор вторым всё равно не воспользуется, а лишнее
         // значение в теле запроса путает при разборе логов.
@@ -552,14 +580,17 @@ async function createTarget() {
     )
     bulkTargetDialog.value = false
     targetForm.value = {
-      charge_type_id: null, basis: 'flat', amount: '', rate: '',
+      charge_type_id: null, scope: 'plot', basis: 'flat', amount: '', rate: '',
       description: '', plot_ids: [], due_date: '', penalty_percent: '20',
     }
     targetScope.value = 'all'
     await onPeriodChange(selectedPeriod.value)
     notifyCharged(data.created, data.no_owner,
-                  'Начисление есть, но в личном кабинете его никто не увидит',
-                  data.skipped_no_area)
+                  data.scope === 'member'
+                    ? 'С них взыскать не с кого — взнос не выписан'
+                    : 'Начисление есть, но в личном кабинете его никто не увидит',
+                  data.skipped_no_area,
+                  data.scope === 'member' ? 'членам' : 'участкам')
   } catch (e) {
     $q.notify({ type: 'negative', message: errText(e, 'Не удалось начислить') })
   } finally { actionLoading.value = false }
@@ -569,17 +600,17 @@ async function createTarget() {
 // гаснет само. Начисление на такой участок в личный кабинет не попадёт:
 // показывать его некому. Молчать об этом нельзя — казначей уверен, что
 // начислил, а человек ничего не видит и идёт разбираться.
-function notifyCharged(created, noOwner, warning, noArea) {
+function notifyCharged(created, noOwner, warning, noArea, whom = 'участков') {
   const orphans = noOwner || []
   // Участки без заполненной площади при расчёте по соткам: им сумму
   // считать не из чего, начисления не будет вообще. Это не то же
   // самое, что участок без собственника, и сказать надо отдельно.
   const arealess = noArea || []
   if (!orphans.length && !arealess.length) {
-    $q.notify({ type: 'positive', message: `Начислено участков: ${created}` })
+    $q.notify({ type: 'positive', message: `Начислено ${whom}: ${created}` })
     return
   }
-  let message = `Начислено участков: ${created}. `
+  let message = `Начислено ${whom}: ${created}. `
   if (orphans.length) {
     message += `Без собственника: ${orphans.length} (${orphans.join(', ')}). ${warning} `
   }
