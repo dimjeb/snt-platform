@@ -390,6 +390,10 @@ class Command(BaseCommand):
         self._check_grant_access(c, CH, TR)
         self._check_account_issuance()
 
+        # ---------------- Начисление по соткам ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("НАЧИСЛЕНИЕ ПО СОТКАМ"))
+        self._check_charges_per_sotka(c, CH)
+
         # ---------------- Электроэнергия ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("ЭЛЕКТРОЭНЕРГИЯ"))
         self._check_electricity_gaps()
@@ -545,6 +549,114 @@ class Command(BaseCommand):
                     r.status_code == 400 and isinstance(detail, str)
                     and "СНТ" in detail,
                     f"HTTP {r.status_code}, detail={detail!r}")
+
+    def _check_charges_per_sotka(self, c, chairman_headers):
+        """
+        Взносы, посчитанные от площади участка.
+
+        Главное, что здесь проверяется, — участок с незаполненной
+        площадью. Сумму ему считать не из чего, начисления не будет
+        вообще, и ответ обязан назвать такие участки поимённо: иначе
+        казначей уверен, что начислил всем, а часть садоводов просто
+        не получит квитанцию.
+        """
+        from datetime import date
+        from decimal import Decimal
+
+        from billing.models import BillingPeriod, Charge, ChargeType
+        from members.models import Member, Plot, PlotOwnership
+        from organizations.models import Organization
+
+        org = Organization.objects.create(name="Проверка соток", is_active=True)
+        period = BillingPeriod.objects.create(
+            organization=org, year=2026, month=None,
+        )
+        target_type = ChargeType.objects.create(
+            organization=org, category=ChargeType.TYPE_TARGET,
+            name="Целевой взнос на дорогу",
+        )
+
+        plots = {}
+        # 6 соток, 6.25 сотки (проверка округления) и участок без площади.
+        for number, area in (("1", "6.00"), ("2", "6.25"), ("3", None)):
+            member = Member.objects.create(
+                organization=org, last_name=f"Соткин{number}", first_name="С",
+            )
+            plot = Plot.objects.create(organization=org, number=number,
+                                       area_sotok=area)
+            PlotOwnership.objects.create(organization=org, plot=plot,
+                                         member=member, date_from=date(2026, 1, 1))
+            plots[number] = plot
+
+        from billing.services import (BASIS_PER_SOTKA, create_membership_charges,
+                                      create_target_charges)
+
+        # Ставка подобрана так, чтобы на участке 2 вылезла ровно половина
+        # копейки: 1000.02 × 6.25 = 6250.1250. Обрезание дало бы 6250.12,
+        # правильное округление — 6250.13. На круглой ставке разницы не
+        # видно, и проверка была бы пустой.
+        # Площадь хранится с двумя знаками (area_sotok — decimal(6,2)),
+        # так что половину копейки приходится набирать ставкой, а не
+        # площадью: «6.335 сотки» база округлит до 6.34 при сохранении.
+        result = create_membership_charges(
+            period, basis=BASIS_PER_SOTKA, rate=Decimal("1000.02"),
+        )
+        self.verify("по соткам начислено только участкам с площадью",
+                    result["created"] == 2, result)
+        self.verify("участок без площади назван поимённо",
+                    result["skipped_no_area"] == ["3"],
+                    result.get("skipped_no_area"))
+
+        def amount_of(number, category):
+            charge = Charge.objects.filter(
+                plot=plots[number], charge_type__category=category,
+            ).first()
+            return charge.amount if charge else None
+
+        self.verify("сумма равна ставке за сотку × площадь",
+                    amount_of("1", "membership") == Decimal("6000.12"),
+                    amount_of("1", "membership"))
+        self.verify("половина копейки округляется вверх, а не обрезается",
+                    amount_of("2", "membership") == Decimal("6250.13"),
+                    amount_of("2", "membership"))
+        self.verify("участку без площади начисления нет",
+                    amount_of("3", "membership") is None)
+        self.verify("расчёт расшифрован в описании начисления",
+                    "за сотку" in (Charge.objects.filter(
+                        plot=plots["1"], charge_type__category="membership",
+                    ).first().description or ""))
+
+        target = create_target_charges(
+            period, target_type, basis=BASIS_PER_SOTKA, rate=Decimal("500.00"),
+        )
+        self.verify("целевой по соткам считается так же",
+                    target["created"] == 2
+                    and amount_of("1", "target") == Decimal("3000.00"),
+                    f"{target}, участок 1: {amount_of('1', 'target')}")
+        self.verify("целевой тоже называет участки без площади",
+                    target["skipped_no_area"] == ["3"],
+                    target.get("skipped_no_area"))
+
+        # --- через API: валидация способа расчёта ---
+        # Период берём из фикстурного СНТ, а не из созданного здесь:
+        # вьюха сначала достаёт период из queryset своей организации и
+        # на чужом отдала бы 404, не дойдя до проверки тела запроса.
+        fixture_period = BillingPeriod.objects.filter(
+            organization=self._fixture_org).first()
+        url = (f"/api/billing/periods/{fixture_period.pk}"
+               f"/create_membership_charges/")
+        for body, field in (
+            ({"basis": "per_sotka"}, "rate"),
+            ({"basis": "per_sotka", "rate": "0"}, "rate"),
+            ({"basis": "flat"}, "amount"),
+            ({"basis": "flat", "amount": "0"}, "amount"),
+        ):
+            r = c.post(url, data=body, content_type="application/json",
+                       **chairman_headers)
+            self.verify(
+                f"без обязательного поля {field} начисление отклонено ({body})",
+                r.status_code == 400, f"HTTP {r.status_code}",
+            )
 
     def _check_electricity_gaps(self):
         """

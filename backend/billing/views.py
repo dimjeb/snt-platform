@@ -62,7 +62,11 @@ class BillingPeriodViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
         s = BulkMembershipChargeSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         return Response(create_membership_charges(
-            period, s.validated_data["amount"], s.validated_data["description"]
+            period,
+            amount=s.validated_data["amount"],
+            description=s.validated_data["description"],
+            basis=s.validated_data["basis"],
+            rate=s.validated_data["rate"],
         ))
 
     @action(detail=True, methods=["post"])
@@ -85,9 +89,11 @@ class BillingPeriodViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
             )
         return Response(create_target_charges(
             period, charge_type,
-            s.validated_data["amount"],
-            s.validated_data.get("plot_ids"),
-            s.validated_data["description"],
+            amount=s.validated_data["amount"],
+            plot_ids=s.validated_data.get("plot_ids"),
+            description=s.validated_data["description"],
+            basis=s.validated_data["basis"],
+            rate=s.validated_data["rate"],
         ))
 
 
