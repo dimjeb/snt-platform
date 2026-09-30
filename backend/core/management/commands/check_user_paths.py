@@ -768,6 +768,61 @@ class Command(BaseCommand):
         self.verify("оплата после срока, но до запуска — без пеней",
                     apply_penalties(org, today=today)["created"] == 0)
 
+        # --- снятие пеней ---
+        from django.core.management import call_command
+
+        from billing.credits import add_credit, credit_balance, spend_credit
+
+        # Отдельный участок под проверку возврата аванса. Аванс гасит
+        # долги от старых к новым, поэтому исходное начисление сначала
+        # закрываем деньгами — иначе аванс уйдёт в него, а не в пени,
+        # и проверка окажется пустой. Так и вышло с первого раза.
+        member5 = Member.objects.create(
+            organization=org, last_name="Пеняев5", first_name="П",
+        )
+        plots["5"] = Plot.objects.create(organization=org, number="5",
+                                         area_sotok="6.00")
+        PlotOwnership.objects.create(organization=org, plot=plots["5"],
+                                     member=member5, date_from=date(2026, 1, 1))
+        advance_plot = plots["5"]
+        extra = charge_for("5", due=overdue_on, amount="100.00")
+        apply_penalties(org, today=today)
+        penalty_row = Charge.objects.filter(penalty_for=extra).first()
+        self.verify("пени по новому участку начислены",
+                    penalty_row is not None and penalty_row.amount == Decimal("20.00"),
+                    penalty_row.amount if penalty_row else None)
+
+        Payment.objects.create(organization=org, charge=extra, date=today,
+                               amount=Decimal("100.00"),
+                               method=Payment.METHOD_CASH)
+        add_credit(advance_plot, amount=Decimal("20.00"), date=today,
+                   organization=org, notes="проверка снятия пеней")
+        spend_credit(advance_plot, today=today)
+        self.verify("пени погасились из аванса",
+                    penalty_row.payments.filter(is_cancelled=False).exists()
+                    and credit_balance(advance_plot) == Decimal("0"),
+                    credit_balance(advance_plot))
+
+        # Пени второго участка оплачены настоящими деньгами — их трогать
+        # нельзя: это уже полученные товариществом деньги.
+        partial_penalty = Charge.objects.filter(penalty_for=partial).first()
+        Payment.objects.create(organization=org, charge=partial_penalty,
+                               date=today, amount=Decimal("120.00"),
+                               method=Payment.METHOD_CASH)
+
+        call_command("remove_penalties", "--org", str(org.pk), verbosity=0)
+
+        self.verify("пени, погашенные авансом, сняты",
+                    not Charge.objects.filter(pk=penalty_row.pk).exists())
+        self.verify("аванс вернулся на лицевой счёт",
+                    credit_balance(advance_plot) == Decimal("20.00"),
+                    credit_balance(advance_plot))
+        self.verify("пени, оплаченные настоящими деньгами, не тронуты",
+                    Charge.objects.filter(pk=partial_penalty.pk).exists())
+        self.verify("исходное начисление снятием пеней не задето",
+                    Charge.objects.filter(pk=full.pk).exists()
+                    and Charge.objects.filter(pk=extra.pk).exists())
+
         # --- через API ---
         r = c.post("/api/billing/charges/apply_penalties/", **chairman_headers)
         self.verify("председатель может начислить пени кнопкой",
