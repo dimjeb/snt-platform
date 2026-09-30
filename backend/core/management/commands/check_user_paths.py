@@ -902,21 +902,54 @@ class Command(BaseCommand):
                                      first_name="Б")
         own(co_a, shared)
         own(co_b, shared)
+        # У А есть ещё и свой участок. Он всё равно в одной группе с Б:
+        # иначе заплатил бы дважды — полную сумму за себя и долю за общий.
+        own(co_a, Plot.objects.create(organization=org, number="7"))
+
+        # Трое на одном участке: 1000 на троих не делится ровно, и копейка
+        # не должна потеряться.
+        trio_plot = Plot.objects.create(organization=org, number="6")
+        trio = []
+        for letter in ("В", "Г", "Д"):
+            person = Member.objects.create(organization=org, last_name="Троица",
+                                           first_name=letter)
+            own(person, trio_plot)
+            trio.append(person)
 
         Plot.objects.create(organization=org, number="4")   # без собственника
 
         result = create_target_charges(period, ctype, amount=Decimal("1000.00"),
                                        scope=SCOPE_MEMBER)
-        self.verify("взнос «за члена» выписан каждому члену один раз",
-                    result["created"] == 3, result)
+        self.verify("плательщиков трое: одиночка, пара и тройка совладельцев",
+                    result["payers"] == 3 and result["created"] == 6, result)
         mine = Charge.objects.filter(member=many)
         self.verify("у человека с двумя участками один взнос, а не два",
-                    mine.count() == 1, mine.count())
+                    mine.count() == 1 and mine.first().amount == Decimal("1000.00"),
+                    [c.amount for c in mine])
         self.verify("взнос лёг на первый по номеру участок (2, а не 10)",
                     mine.first() is not None and mine.first().plot_id == plot2.pk,
                     mine.first().plot.number if mine.first() else None)
-        self.verify("совладельцы общего участка платят каждый за себя",
-                    Charge.objects.filter(plot=shared).count() == 2)
+
+        pair = {ch.member_id: ch.amount
+                for ch in Charge.objects.filter(member__in=[co_a, co_b])}
+        self.verify("совладельцы платят как один человек, поровну",
+                    pair == {co_a.pk: Decimal("500.00"), co_b.pk: Decimal("500.00")},
+                    pair)
+        self.verify("совладелец со своим участком не платит второй раз",
+                    Charge.objects.filter(member=co_a).count() == 1)
+
+        trio_shares = sorted(
+            (ch.amount for ch in Charge.objects.filter(member__in=trio)),
+            reverse=True,
+        )
+        self.verify("1000 на троих: 333.34 + 333.33 + 333.33, копейка не теряется",
+                    trio_shares == [Decimal("333.34"), Decimal("333.33"),
+                                    Decimal("333.33")]
+                    and sum(trio_shares) == Decimal("1000.00"),
+                    trio_shares)
+        self.verify("в описании доли сказано, что она делится",
+                    "1/3 доли" in (Charge.objects.filter(member=trio[0])
+                                   .first().description or ""))
         self.verify("участок без собственника назван",
                     result["no_owner"] == ["4"], result["no_owner"])
 

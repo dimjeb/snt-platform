@@ -184,8 +184,9 @@
           />
           <div v-if="targetForm.scope === 'member'" class="text-caption text-grey-8 charge-preview">
             Один взнос на человека, сколько бы участков у него ни было.
-            Совладельцы общего участка платят каждый за себя.
-            По соткам «за члена» не считается — только фиксированной суммой.
+            Совладельцы платят как один человек: сумма делится между ними
+            поровну. По соткам «за члена» не считается — только
+            фиксированной суммой.
           </div>
           <q-option-group
             v-if="targetForm.scope === 'plot'"
@@ -585,12 +586,14 @@ async function createTarget() {
     }
     targetScope.value = 'all'
     await onPeriodChange(selectedPeriod.value)
-    notifyCharged(data.created, data.no_owner,
+    // «За члена» считаем плательщиков, а не строки: пара совладельцев —
+    // один плательщик, хотя начислений у них два (по доле каждому).
+    notifyCharged(data.scope === 'member' ? data.payers : data.created, data.no_owner,
                   data.scope === 'member'
                     ? 'С них взыскать не с кого — взнос не выписан'
                     : 'Начисление есть, но в личном кабинете его никто не увидит',
                   data.skipped_no_area,
-                  data.scope === 'member' ? 'членам' : 'участкам')
+                  data.scope === 'member' ? 'плательщикам' : 'участкам')
   } catch (e) {
     $q.notify({ type: 'negative', message: errText(e, 'Не удалось начислить') })
   } finally { actionLoading.value = false }

@@ -239,60 +239,100 @@ def create_target_charges(period: BillingPeriod, charge_type: ChargeType,
 def _create_member_target_charges(period, charge_type, *, amount, plot_ids,
                                   description, due_date, penalty_percent):
     """
-    Целевой взнос «за члена»: один на человека.
+    Целевой взнос «за члена»: один на плательщика.
 
-    Член с тремя участками платит один раз, а не три. Совладельцы
-    общего участка, если оба члены товарищества, платят каждый за себя.
+    Плательщик — это человек, а совладельцы считаются одним человеком:
+    сумма выписывается им один раз и делится поровну. Человек с тремя
+    участками платит один раз, а не три.
 
-    Начисление привязывается к участку — квитанции, сводка долгов и QR
-    работают по участкам, — а именно к первому по номеру из участков
-    человека (из выбранных, если выбраны). Поле member говорит, чей это
-    взнос: по нему кабинет не показывает его совладельцу.
+    Если человек владеет одним участком сам, а другим — вместе с кем-то,
+    они всё равно один плательщик: иначе он заплатил бы дважды — полную
+    сумму за себя и долю за общий участок. Поэтому плательщики — это
+    группы людей, связанных совместным владением (компоненты связности),
+    а не отдельные участки.
 
-    По соткам «за члена» не считаем: площадь — свойство участка, и у
-    совладельцев одна и та же площадь посчиталась бы дважды. Сериализатор
-    не пропускает такую комбинацию, здесь amount всегда фиксированный.
+    Каждая доля — отдельное начисление с полем member: так каждый видит
+    в кабинете и оплачивает только свою часть. Доля привязывается к
+    первому по номеру участку этого человека внутри группы.
+
+    По соткам «за члена» не считаем: площадь — свойство участка;
+    сериализатор такую комбинацию не пропускает.
     """
     from members.models import PlotOwnership
 
     org = period.organization
-    ownerships = (
+    ownerships = list(
         PlotOwnership.objects
         .filter(organization=org, date_to__isnull=True)
         .select_related("member", "plot")
     )
     plots = Plot.objects.filter(organization=org)
     if plot_ids:
-        ownerships = ownerships.filter(plot_id__in=plot_ids)
+        ownerships = [o for o in ownerships if o.plot_id in set(plot_ids)]
         plots = plots.filter(pk__in=plot_ids)
 
-    by_member = {}
-    for ownership in ownerships:
-        by_member.setdefault(ownership.member, []).append(ownership.plot)
+    # Объединение-поиск по людям: владельцы одного участка — одна группа.
+    parent = {}
 
-    # Участки без собственника: взыскать не с кого. Называем их, чтобы
-    # казначей не думал, что охватил всех.
-    owned = {plot.pk for member_plots in by_member.values() for plot in member_plots}
+    def root(member_id):
+        while parent[member_id] != member_id:
+            parent[member_id] = parent[parent[member_id]]
+            member_id = parent[member_id]
+        return member_id
+
+    members, plots_of = {}, {}
+    owners_of_plot = {}
+    for o in ownerships:
+        members[o.member_id] = o.member
+        parent.setdefault(o.member_id, o.member_id)
+        plots_of.setdefault(o.member_id, []).append(o.plot)
+        owners_of_plot.setdefault(o.plot_id, []).append(o.member_id)
+    for owner_ids in owners_of_plot.values():
+        first = root(owner_ids[0])
+        for other in owner_ids[1:]:
+            parent[root(other)] = first
+
+    groups = {}
+    for member_id in members:
+        groups.setdefault(root(member_id), []).append(member_id)
+
+    # Участки без собственника: взыскать не с кого.
     no_owner = sorted(
-        (p.number for p in plots if p.pk not in owned), key=_plot_sort_key,
+        (p.number for p in plots if p.pk not in owners_of_plot),
+        key=_plot_sort_key,
     )
 
-    charges = []
-    for member, member_plots in by_member.items():
+    charges, payers = [], 0
+    for member_ids in groups.values():
+        # Если хоть кому-то из группы взнос уже выписан — группа
+        # обработана раньше. Пересчитывать доли нельзя: часть людей могла
+        # уже заплатить по старой раскладке.
         if Charge.objects.filter(period=period, charge_type=charge_type,
-                                 member=member).exists():
+                                 member_id__in=member_ids).exists():
             continue
-        plot = min(member_plots, key=lambda p: _plot_sort_key(p.number))
-        charges.append(Charge(
-            organization=org,
-            period=period,
-            plot=plot,
-            member=member,
-            charge_type=charge_type,
-            amount=amount,
-            description=description or "Взнос с члена товарищества",
-            **_penalty_fields(due_date, penalty_percent),
+        payers += 1
+        member_ids.sort(key=lambda mid: (
+            min(_plot_sort_key(p.number) for p in plots_of[mid]),
+            members[mid].full_name,
         ))
+        shares = _split_equally(amount, len(member_ids))
+        for member_id, share in zip(member_ids, shares):
+            plot = min(plots_of[member_id], key=lambda p: _plot_sort_key(p.number))
+            if len(member_ids) == 1:
+                note = "Взнос с члена товарищества"
+            else:
+                note = (f"Взнос с члена товарищества — 1/{len(member_ids)} доли, "
+                        f"поровну между совладельцами")
+            charges.append(Charge(
+                organization=org,
+                period=period,
+                plot=plot,
+                member=members[member_id],
+                charge_type=charge_type,
+                amount=share,
+                description=description or note,
+                **_penalty_fields(due_date, penalty_percent),
+            ))
 
     with transaction.atomic():
         Charge.objects.bulk_create(charges)
@@ -300,7 +340,21 @@ def _create_member_target_charges(period, charge_type, *, amount, plot_ids,
 
     return {"created": len(charges), "no_owner": no_owner,
             "skipped_no_area": [], "scope": SCOPE_MEMBER,
-            "members": len(by_member)}
+            "payers": payers}
+
+
+def _split_equally(amount, parts):
+    """
+    Разделить сумму на равные доли до копейки так, чтобы они сходились.
+
+    1000 ₽ на троих — это 333.34 + 333.33 + 333.33, а не три раза по
+    333.33: иначе товарищество недосчитается копейки на каждой такой
+    группе, и сверка с решением собрания не сойдётся.
+    """
+    total_kopeks = int((Decimal(amount) * 100).to_integral_value())
+    base, extra = divmod(total_kopeks, parts)
+    return [(Decimal(base + (1 if i < extra else 0)) / 100).quantize(KOPEK)
+            for i in range(parts)]
 
 
 def apply_penalties(organization, *, today=None, user=None) -> dict:
