@@ -123,6 +123,17 @@ ctype = ChargeType.objects.create(
 )
 Charge.objects.create(organization=org, period=period, plot=p,
                       charge_type=ctype, amount="15.00")
+
+# Просроченное начисление: под председателем проверяется, что кнопка
+# «Начислить пени» не только считает, но и показывает расшифровку —
+# строку с процентом, сроком и долгом. Иначе человек видит непонятную
+# сумму и идёт спрашивать.
+overdue_type = ChargeType.objects.create(
+    organization=org, name="Членский взнос", category=ChargeType.TYPE_MEMBERSHIP,
+)
+Charge.objects.create(organization=org, period=period, plot=p,
+                      charge_type=overdue_type, amount="1000.00",
+                      due_date=date(2026, 9, 1), penalty_percent="20.00")
 u = User(username=os.environ["SMOKE_LOGIN"], organization=org, member=m,
          role=User.ROLE_MEMBER, is_active=True, must_change_password=True)
 u.set_password(os.environ["SMOKE_PASSWORD"])
