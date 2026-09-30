@@ -1375,7 +1375,111 @@ class Command(BaseCommand):
                     and "1С" in (self._json(r) or {}).get("detail", ""),
                     f"HTTP {r.status_code}")
 
+        self._check_statement_xlsx(c, chairman_headers, plot)
+
         self._check_advance(c, chairman_headers, member_headers)
+
+    def _check_statement_xlsx(self, c, chairman_headers, plot):
+        """
+        Выписка таблицей (.xlsx) — так её отдаёт ВТБ Бизнес кнопкой
+        «Выписка», и председатель приносит именно такой файл.
+
+        Файл здесь синтетический, но повторяет разметку настоящей
+        выгрузки: шапка, строка заголовков седьмой, между днями строки
+        «ИТОГО ЗА ДЕНЬ», СБП-плательщик одной строкой через «//».
+        """
+        import io
+
+        import openpyxl
+
+        from billing.models import BankStatement, BankTransaction
+
+        org = self._fixture_org
+
+        def build(account):
+            book = openpyxl.Workbook()
+            sheet = book.active
+            sheet.title = "40703810100810020382"
+            sheet.append(["ВЫПИСКА"])
+            sheet.append(["Номер счета:", account, "Валюта:",
+                          "Валюта 643, Российский рубль", None,
+                          "Владелец счёта:", org.name])
+            sheet.append(["Начальная дата: ", "01.09.2026",
+                          "Конечная дата: ", "30.09.2026"])
+            sheet.append(["Входящий остаток RUB:", "0",
+                          "Исходящий остаток RUB:", "0"])
+            sheet.append([])
+            sheet.append([])
+            sheet.append(["Дата", "Номер", "Вид операции", "Контрагент",
+                          "ИНН контрагента", "БИК банка контрагента",
+                          "Счет контрагента", "Дебет, RUR", "Кредит, RUR",
+                          "Назначение", "Статус плательщика (101)"])
+            sheet.append(["10.09.2026", "9001", "16",
+                          "УФК по Иркутской области", "3811085917",
+                          "010507002", "03212643000000012010",
+                          "6410", "0", "Взыскание по постановлению", "31"])
+            sheet.append(["ИТОГО ЗА ДЕНЬ:", None, None, None, None, None,
+                          None, "6410", "0"])
+            sheet.append(["11.09.2026", "9002", "01",
+                          "ПАО СБЕРБАНК//СИДОРОВ СИДОР СИДОРОВИЧ//3600512345//",
+                          "381505100000", "045004719", "40817810520114000647",
+                          "0", 1234.50,
+                          f"ЦЕЛЕВОЙ ВЗНОС {plot.number} УЧ;11/09/2026", ""])
+            sheet.append(["ИТОГО ЗА ДЕНЬ:", None, None, None, None, None,
+                          None, "0", "1234.5"])
+            sheet.append(["12.09.2026", "9003", "01",
+                          "Неизвестнов Никто Никтович", "381505100001",
+                          "045004719", "40817810520114000648",
+                          "0", 500, "ЦЕЛЕВОЙ ВЗНОС;12/09/2026", ""])
+            sheet.append(["ИТОГО:", None, None, None, None, None,
+                          None, "6410", "1734.5"])
+            buffer = io.BytesIO()
+            book.save(buffer)
+            buffer.seek(0)
+            return buffer
+
+        upload = build(org.bank_account)
+        upload.name = "VTB_BankStatementExt.xlsx"
+        r = c.post("/api/billing/statements/", data={"file": upload},
+                   **chairman_headers)
+        data = self._json(r) or {}
+        self.verify("выписка .xlsx разбирается", r.status_code == 201,
+                    f"HTTP {r.status_code}: {data.get('detail')}")
+        if r.status_code != 201:
+            return
+
+        self.verify("из .xlsx взяты только поступления",
+                    data.get("stats", {}).get("loaded") == 2,
+                    f"загружено {data.get('stats', {}).get('loaded')}")
+        self.verify("строки «ИТОГО» в платежи не попали",
+                    BankTransaction.objects.filter(
+                        statement_id=data["id"]).count() == 2)
+        self.verify("номер участка перед словом «уч» опознан",
+                    (data.get("summary") or {}).get("by_plot") == 1,
+                    (data.get("summary") or {}).get("by_plot"))
+
+        row = BankTransaction.objects.filter(
+            statement_id=data["id"], doc_number="9002").first()
+        self.verify("плательщик СБП очищен от названия банка",
+                    row is not None
+                    and row.payer_name == "СИДОРОВ СИДОР СИДОРОВИЧ",
+                    row.payer_name if row else "строки нет")
+        self.verify("сумма из .xlsx прочитана с копейками",
+                    row is not None and str(row.amount) == "1234.50",
+                    row.amount if row else "строки нет")
+
+        statement = BankStatement.objects.get(pk=data["id"])
+        self.verify("период выписки взят из шапки .xlsx",
+                    str(statement.date_from) == "2026-09-01"
+                    and str(statement.date_to) == "2026-09-30",
+                    f"{statement.date_from} — {statement.date_to}")
+
+        alien = build("40703810100810099999")
+        alien.name = "alien.xlsx"
+        r = c.post("/api/billing/statements/", data={"file": alien},
+                   **chairman_headers)
+        self.verify("выписка по чужому счёту отвергается",
+                    r.status_code == 400, f"HTTP {r.status_code}")
 
 
     def _check_advance(self, c, chairman_headers, member_headers):

@@ -104,6 +104,29 @@ def _parse_amount(value: str) -> Decimal:
         return Decimal("0")
 
 
+def parse_statement(raw: bytes, *, file_name: str = "",
+                    our_account: str = "") -> ParsedStatement:
+    """
+    Разобрать выписку, сам определив формат.
+
+    Формат определяем по первым байтам, а не по расширению: имя файла
+    приходит из браузера таким, какое дал банк, и «выписка.xlsx» вполне
+    может оказаться текстом обмена с 1С.
+    """
+    from .statement_xlsx import (looks_like_old_xls, looks_like_xlsx,
+                                 parse_xlsx_statement)
+
+    if looks_like_xlsx(raw):
+        return parse_xlsx_statement(raw, our_account=our_account)
+    if looks_like_old_xls(raw):
+        raise StatementError(
+            "Это старый формат Excel (.xls). Откройте файл и сохраните "
+            "как «Книга Excel (.xlsx)», либо выгрузите из банк-клиента "
+            "обмен с 1С."
+        )
+    return parse_1c_statement(raw, our_account=our_account)
+
+
 def parse_1c_statement(raw: bytes, *, our_account: str = "") -> ParsedStatement:
     """
     Разобрать файл выписки.
@@ -115,8 +138,8 @@ def parse_1c_statement(raw: bytes, *, our_account: str = "") -> ParsedStatement:
     text = _decode(raw)
     if MARKER not in text:
         raise StatementError(
-            "Это не выписка в формате «1С:Клиент-Банк». Выгрузите из "
-            "банк-клиента обмен с 1С — обычно файл называется kl_to_1c.txt."
+            "Не понимаю этот файл. Нужна либо выгрузка «Обмен с 1С» "
+            "(файл kl_to_1c.txt), либо выписка по счёту в Excel (.xlsx)."
         )
 
     result = ParsedStatement()
