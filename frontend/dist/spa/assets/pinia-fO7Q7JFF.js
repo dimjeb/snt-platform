@@ -1,0 +1,1 @@
+import{K as e,U as t}from"./index-sQOw78kM.js";var n=e(({app:e})=>{e.use(t())});export{n as default};

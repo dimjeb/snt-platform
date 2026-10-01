@@ -60,6 +60,11 @@ const routes = [
         meta: { roles: ['chairman', 'treasurer', 'superadmin'] },
       },
       {
+        path: 'organization',
+        component: () => import('pages/OrganizationPage.vue'),
+        meta: { roles: ['chairman', 'superadmin'] },
+      },
+      {
         path: 'reports',
         component: () => import('pages/ReportsPage.vue'),
         meta: { roles: ['chairman', 'treasurer', 'superadmin'] },

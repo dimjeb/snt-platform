@@ -4,9 +4,13 @@
       <q-toolbar class="snt-toolbar">
         <q-btn flat dense round icon="menu" @click="drawer = !drawer" class="q-mr-sm" />
 
+        <img v-if="auth.orgInfo?.logo" :src="auth.orgInfo.logo" :alt="auth.orgInfo.name"
+             class="snt-org-logo q-mr-sm" />
         <div class="snt-logo row items-center no-wrap q-mr-md gt-xs">
-          <q-icon name="park" size="22px" class="q-mr-xs" style="color:rgba(255,255,255,0.85)" />
-          <span class="text-weight-bold" style="font-size:15px;letter-spacing:0.02em">СНТ Платформа</span>
+          <q-icon v-if="!auth.orgInfo?.logo" name="park" size="22px" class="q-mr-xs" style="color:rgba(255,255,255,0.85)" />
+          <span class="text-weight-bold" style="font-size:15px;letter-spacing:0.02em">
+            {{ auth.orgInfo?.name || 'СНТ Платформа' }}
+          </span>
         </div>
 
         <div class="snt-page-title lt-sm">{{ pageTitle }}</div>
@@ -111,6 +115,11 @@
             <q-item clickable v-ripple to="/reports" class="snt-nav-item">
               <q-item-section avatar><q-icon name="bar_chart" /></q-item-section>
               <q-item-section>Отчёты</q-item-section>
+            </q-item>
+
+            <q-item v-if="auth.canEditOrg" clickable v-ripple to="/organization" class="snt-nav-item">
+              <q-item-section avatar><q-icon name="home_work" /></q-item-section>
+              <q-item-section>Товарищество</q-item-section>
             </q-item>
           </template>
 
@@ -246,7 +255,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useAuthStore } from 'stores/auth'
@@ -291,6 +300,7 @@ const pageTitles = {
   '/electricity': 'Электроэнергия',
   '/meter-reading': 'Показания счётчика',
   '/reports': 'Отчёты',
+  '/organization': 'Товарищество',
 }
 const pageTitle = computed(() => pageTitles[route.path] || 'СНТ Платформа')
 
@@ -330,6 +340,17 @@ async function createOrg() {
 }
 
 watch(orgDialog, (val) => { if (val) loadOrgs() })
+
+// Имя и логотип своего СНТ для шапки. Ошибка не мешает работе — останется
+// «СНТ Платформа».
+async function loadOrgInfo() {
+  if (!auth.hasOrg) { auth.setOrgInfo(null); return }
+  try {
+    const { data } = await api.get('/organizations/current/')
+    auth.setOrgInfo(data)
+  } catch { auth.setOrgInfo(null) }
+}
+onMounted(loadOrgInfo)
 
 async function logout() {
   auth.logout()

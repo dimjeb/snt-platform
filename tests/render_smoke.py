@@ -410,6 +410,25 @@ with sync_playwright() as pw:
            "BR-START-1: записано, долг 50 ₽ начислен" in meter_text,
            meter_text[meter_text.find("BR-START"):][:120] if "BR-START" in meter_text else "")
 
+    # 9б. Логотип товарищества: председатель загружает, в шапке видно.
+    import io as _io
+    from PIL import Image as _Image
+    _buf = _io.BytesIO()
+    _Image.new("RGB", (120, 60), (40, 150, 70)).save(_buf, "PNG")
+    page.goto(f"{BASE}/organization", wait_until="networkidle")
+    page.wait_for_timeout(1200)
+    page.locator("input[type=file]").set_input_files(
+        {"name": "logo.png", "mimeType": "image/png", "buffer": _buf.getvalue()})
+    page.wait_for_timeout(400)
+    page.get_by_role("button", name="Загрузить").click()
+    page.wait_for_timeout(2000)
+    loaded = page.evaluate(
+        "() => { const i = document.querySelector('img.snt-org-logo');"
+        " return i ? [i.getAttribute('src'), i.naturalWidth] : null }")
+    verify("логотип загружен и сразу виден в шапке",
+           loaded is not None and loaded[0].startswith("/media/logos/") and loaded[1] == 120,
+           str(loaded))
+
     # 10. Оплата с телефона: камерой свой экран не отсканировать, поэтому
     #     QR сохраняется в галерею, а реквизиты копируются по одному.
     phone = browser.new_context(
@@ -430,6 +449,11 @@ with sync_playwright() as pw:
     mobile.get_by_role("button", name="Войти").click()
     mobile.wait_for_url("**/dashboard", timeout=15000)
     mobile.wait_for_timeout(2000)
+    member_logo = mobile.evaluate(
+        "() => { const i = document.querySelector('img.snt-org-logo');"
+        " return i ? i.naturalWidth : 0 }")
+    verify("рядовой член видит логотип в шапке (и на телефоне)",
+           member_logo == 120, f"ширина {member_logo}")
     mobile.get_by_role("button", name="Оплатить по QR из банка").click()
     mobile.wait_for_timeout(2500)
     phone_text = body_text(mobile)
