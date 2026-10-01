@@ -481,21 +481,50 @@ def get_debt_summary(organization, period=None):
     plots = (
         Plot.objects.filter(organization=organization)
         .prefetch_related(
-            Prefetch("charges", queryset=charges_qs),
+            Prefetch("charges", queryset=charges_qs.select_related("charge_type")),
             "ownerships__member",
         )
     )
+
+    # Аванс по участкам и назначению — одним запросом на всю сводку, а не
+    # по запросу на участок: участков в товариществе полторы сотни.
+    from django.db.models import Sum
+
+    from .models import PlotCredit
+
+    advances = {}
+    for row in (PlotCredit.objects.filter(organization=organization)
+                .values("plot_id", "category").annotate(total=Sum("amount"))):
+        if row["total"] and row["total"] > 0:
+            advances.setdefault(row["plot_id"], []).append(
+                {"category": row["category"], "amount": row["total"]})
 
     result = []
     for plot in plots:
         owners = plot.current_owners
         total_charged = Decimal("0")
         total_paid = Decimal("0")
+        # Разбивка «за что»: по видам начислений. Пени — отдельной
+        # строкой, чтобы было видно, сколько из долга набежало сверху.
+        items = {}
         for charge in plot.charges.all():
             total_charged += charge.amount
-            total_paid += charge.paid_amount
+            paid = charge.paid_amount
+            total_paid += paid
+            key = charge.charge_type_id
+            item = items.setdefault(key, {
+                "name": charge.charge_type.name,
+                "category": charge.charge_type.category,
+                "charged": Decimal("0"), "paid": Decimal("0"), "debt": Decimal("0"),
+            })
+            item["charged"] += charge.amount
+            item["paid"] += paid
+            item["debt"] += charge.amount - paid
         debt = total_charged - total_paid
         result.append({
+            "items": sorted(items.values(),
+                            key=lambda i: (i["category"] == "penalty", i["name"])),
+            "advances": advances.get(plot.id, []),
             "plot_id": plot.id,
             "plot_number": plot.number,
             # Участок в общей собственности — в отчёте должны стоять все,

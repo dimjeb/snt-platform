@@ -41,8 +41,31 @@
             <q-item-section>
               <q-item-label>Уч. №{{ d.plot_number }}{{ ownerSuffix(d) }}</q-item-label>
               <q-item-label caption>
-                Нач: {{ formatMoney(d.total_charged) }} · Опл: {{ formatMoney(d.total_paid) }}
+                Начислено {{ formatMoney(d.total_charged) }} · оплачено {{ formatMoney(d.total_paid) }}
               </q-item-label>
+              <!-- За что именно: по видам начислений. Строки с долгом —
+                   красным, оплаченные — зелёным, чтобы с одного взгляда
+                   было видно, что закрыто, а что нет. -->
+              <div v-if="d.items && d.items.length" class="debt-items q-mt-xs">
+                <div v-for="item in d.items" :key="item.name" class="debt-item">
+                  <span class="debt-item-name">{{ item.name }}</span>
+                  <span v-if="Number(item.debt) > 0" class="text-negative">
+                    долг {{ formatMoney(item.debt) }}
+                    <span class="text-grey-7">из {{ formatMoney(item.charged) }}</span>
+                  </span>
+                  <span v-else-if="Number(item.debt) < 0" class="text-blue-8">
+                    переплата {{ formatMoney(-item.debt) }}
+                  </span>
+                  <span v-else class="text-green-8">оплачено {{ formatMoney(item.charged) }}</span>
+                </div>
+                <div v-for="a in d.advances" :key="'adv-' + a.category" class="debt-item">
+                  <span class="debt-item-name">Аванс</span>
+                  <span class="text-blue-8">
+                    {{ formatMoney(a.amount) }}
+                    <template v-if="a.category"> — ждёт «{{ advanceLabel(a.category) }}»</template>
+                  </span>
+                </div>
+              </div>
             </q-item-section>
             <q-item-section side>
               <span :class="d.debt > 0 ? 'debt-amount' : 'paid-amount'">
@@ -441,6 +464,10 @@ function methodLabel(m) {
   return methodOptions.find((o) => o.value === m)?.label || m
 }
 function formatMoney(v) { return v ? Number(v).toLocaleString('ru-RU', { maximumFractionDigits: 0 }) : '0' }
+function advanceLabel(category) {
+  return { target: 'Целевой взнос', membership: 'Членский взнос',
+    electricity: 'Электроэнергия' }[category] || category
+}
 function formatDate(v) { return v ? v.split('-').reverse().join('.') : '' }
 
 // Сводка долгов отдаёт поле owner_name, а не member_name: шаблон читал
@@ -930,6 +957,19 @@ onMounted(async () => {
 <style scoped>
 /* Предварительный расчёт по соткам: заметная плашка, а не сноска —
    именно здесь видно, скольким участкам начисление не уйдёт. */
+.debt-items {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.debt-item {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.debt-item-name {
+  color: rgba(0, 0, 0, 0.7);
+  min-width: 130px;
+}
 .charge-preview {
   background: rgba(0, 0, 0, 0.04);
   border-left: 3px solid var(--q-primary);
