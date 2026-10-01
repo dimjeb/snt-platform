@@ -1058,6 +1058,107 @@ class Command(BaseCommand):
                     t_charge.debt == 0 and m_charge.paid_amount == 0,
                     f"целевой долг {t_charge.debt}, членский оплачен {m_charge.paid_amount}")
 
+        # --- разнесение одного перевода по нескольким категориям ---
+        split_plot = Plot.objects.create(organization=org, number="8")
+        PlotOwnership.objects.create(organization=org, plot=split_plot, member=owner,
+                                     date_from=date(2026, 1, 1))
+        # Целевой старше членского: без раскладки «от старых к новым»
+        # 10 000 сначала закрыли бы целевой целиком.
+        s_target = Charge.objects.create(organization=org, period=old_period,
+                                         plot=split_plot, charge_type=target,
+                                         amount=Decimal("8000.00"))
+        s_member = Charge.objects.create(organization=org, period=new_period,
+                                         plot=split_plot, charge_type=membership,
+                                         amount=Decimal("6000.00"))
+        split_statement = BankStatement.objects.create(organization=org,
+                                                       file_name="split.xlsx")
+        split_row = BankTransaction.objects.create(
+            organization=org, statement=split_statement, doc_number="2",
+            date=date(2026, 9, 21), amount=Decimal("10000.00"),
+            purpose="Членский и целевой взносы уч 8", plot=split_plot,
+            member=owner, match_kind=BankTransaction.MATCH_PLOT,
+            allocation=[{"category": "membership", "amount": "6000.00"},
+                        {"category": "target", "amount": "4000.00"}],
+        )
+        apply_statement(split_statement)
+        s_target.refresh_from_db()
+        s_member.refresh_from_db()
+        self.verify("10 000 разнесено по частям: 6000 в членский, 4000 в целевой",
+                    s_member.paid_amount == Decimal("6000.00")
+                    and s_target.paid_amount == Decimal("4000.00"),
+                    f"членский {s_member.paid_amount}, целевой {s_target.paid_amount}")
+
+        # Часть больше долга по категории: недостающее идёт дальше и
+        # называется в примечании.
+        short_plot = Plot.objects.create(organization=org, number="11")
+        PlotOwnership.objects.create(organization=org, plot=short_plot, member=owner,
+                                     date_from=date(2026, 1, 1))
+        small_member = Charge.objects.create(organization=org, period=new_period,
+                                             plot=short_plot, charge_type=membership,
+                                             amount=Decimal("1000.00"))
+        big_target = Charge.objects.create(organization=org, period=new_period,
+                                           plot=short_plot, charge_type=target,
+                                           amount=Decimal("5000.00"))
+        short_statement = BankStatement.objects.create(organization=org,
+                                                       file_name="short.xlsx")
+        short_row = BankTransaction.objects.create(
+            organization=org, statement=short_statement, doc_number="3",
+            date=date(2026, 9, 22), amount=Decimal("3000.00"),
+            purpose="взносы", plot=short_plot, member=owner,
+            match_kind=BankTransaction.MATCH_PLOT,
+            allocation=[{"category": "membership", "amount": "3000.00"}],
+        )
+        apply_statement(short_statement)
+        short_row.refresh_from_db()
+        small_member.refresh_from_db()
+        big_target.refresh_from_db()
+        self.verify("часть больше долга: лишнее ушло в другие начисления, не потерялось",
+                    small_member.paid_amount == Decimal("1000.00")
+                    and big_target.paid_amount == Decimal("2000.00"),
+                    f"членский {small_member.paid_amount}, целевой {big_target.paid_amount}")
+        self.verify("нехватка долга по категории названа в примечании",
+                    "членский — 2000.00 ₽" in (short_row.note or ""), short_row.note)
+
+        # --- через API: правка строки выписки ---
+        api_statement = BankStatement.objects.create(
+            organization=self._fixture_org, file_name="api.xlsx")
+        api_row = BankTransaction.objects.create(
+            organization=self._fixture_org, statement=api_statement,
+            doc_number="4", date=date(2026, 9, 23), amount=Decimal("1000.00"),
+            purpose="взнос",
+        )
+
+        def patch_row(row, body):
+            return c.patch(f"/api/billing/transactions/{row.pk}/", data=body,
+                           content_type="application/json", **chairman_headers)
+
+        r = patch_row(api_row, {"allocation": [
+            {"category": "membership", "amount": "600"},
+            {"category": "target", "amount": "400"}]})
+        api_row.refresh_from_db()
+        self.verify("разделение сохраняется из интерфейса",
+                    r.status_code == 200 and len(api_row.allocation) == 2,
+                    f"HTTP {r.status_code}")
+        for body, label in (
+            ({"allocation": [{"category": "membership", "amount": "1500"}]},
+             "части больше платежа"),
+            ({"allocation": [{"category": "garbage", "amount": "100"}]},
+             "неизвестная категория"),
+            ({"allocation": [{"category": "target", "amount": "100"},
+                             {"category": "target", "amount": "100"}]},
+             "одна категория дважды"),
+            ({"plot": split_plot.pk}, "участок чужого товарищества"),
+        ):
+            r = patch_row(api_row, body)
+            self.verify(f"{label} — отклоняется", r.status_code == 400,
+                        f"HTTP {r.status_code}")
+
+        api_row.status = BankTransaction.STATUS_APPLIED
+        api_row.save(update_fields=["status"])
+        r = patch_row(api_row, {"category": "target"})
+        self.verify("проведённую строку править нельзя", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+
         # --- перенос ---
         # Казначей по ошибке провёл 2000 наличными в целевой вместо членского.
         t2 = Charge.objects.create(organization=org, period=new_period, plot=plot,

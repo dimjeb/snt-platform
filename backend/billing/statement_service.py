@@ -25,6 +25,13 @@ from .statement import parse_statement
 log = logging.getLogger(__name__)
 
 
+CATEGORY_LABELS = {
+    "membership": "членский",
+    "target": "целевой",
+    "electricity": "электроэнергия",
+}
+
+
 class StatementImportError(Exception):
     pass
 
@@ -132,6 +139,51 @@ def apply_statement(statement, *, user=None):
                 .prefetch_related("payments")
                 .order_by("period__year", "period__month", "pk")
             )
+
+            def pay(candidates, limit):
+                """Разнести не больше limit ₽ по candidates от старых к новым."""
+                spent = Decimal("0")
+                for charge in candidates:
+                    if spent >= limit:
+                        break
+                    debt = charge.debt
+                    if debt <= 0:
+                        continue
+                    take = min(debt, limit - spent)
+                    Payment.objects.create(
+                        organization=statement.organization,
+                        charge=charge,
+                        date=row.date,
+                        amount=take,
+                        method=Payment.METHOD_BANK,
+                        external_ref=row.doc_number,
+                        notes=f"Выписка {statement.file_name}",
+                        recorded_by=user,
+                    )
+                    # Платёж только что создан, а prefetch его не видит:
+                    # сбрасываем кэш, иначе следующая часть того же
+                    # перевода посчитала бы долг без него.
+                    getattr(charge, "_prefetched_objects_cache", {}).pop("payments", None)
+                    spent += take
+                return spent
+
+            remaining = row.amount
+            short = []
+            # Сначала части, которые казначей разнёс руками: «6000 в
+            # членский, 4000 в целевой». Если по категории долга меньше,
+            # чем указано, недостающее уходит в общий остаток — и это
+            # пишется в примечание, чтобы было видно, что раскладка
+            # выполнилась не полностью.
+            for part in row.allocation or []:
+                want = min(Decimal(part["amount"]), remaining)
+                same = [c for c in charges
+                        if c.charge_type.category == part["category"]]
+                got = pay(same, want)
+                remaining -= got
+                if got < want:
+                    label = CATEGORY_LABELS.get(part["category"], part["category"])
+                    short.append(f"{label} — {want - got} ₽")
+
             if row.category:
                 # Человек написал, на что платит, — сначала туда. Иначе
                 # «целевой взнос» закрыл бы более старый членский, и
@@ -140,25 +192,11 @@ def apply_statement(statement, *, user=None):
                 charges.sort(
                     key=lambda c: c.charge_type.category != row.category
                 )
-            remaining = row.amount
-            for charge in charges:
-                if remaining <= 0:
-                    break
-                debt = charge.debt
-                if debt <= 0:
-                    continue
-                take = min(debt, remaining)
-                Payment.objects.create(
-                    organization=statement.organization,
-                    charge=charge,
-                    date=row.date,
-                    amount=take,
-                    method=Payment.METHOD_BANK,
-                    external_ref=row.doc_number,
-                    notes=f"Выписка {statement.file_name}",
-                    recorded_by=user,
-                )
-                remaining -= take
+            remaining -= pay(charges, remaining)
+            row.note = ""
+            if short:
+                row.note = ("По категориям не хватило долга, разнесено в "
+                            "остальные: " + ", ".join(short) + ". ")
 
             row.status = BankTransaction.STATUS_APPLIED
             if remaining > 0:
@@ -173,7 +211,7 @@ def apply_statement(statement, *, user=None):
                     transaction_row=row,
                     notes=f"Переплата по выписке {statement.file_name}",
                 )
-                row.note = (
+                row.note += (
                     f"{remaining} ₽ зачислено авансом — начислений не хватило."
                 )
                 log.info(

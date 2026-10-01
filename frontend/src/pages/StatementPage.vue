@@ -79,6 +79,14 @@
                 {{ t.category_display }}
               </span>
             </q-item-label>
+            <q-item-label v-if="t.allocation && t.allocation.length" caption class="text-blue-9">
+              Разделено: {{ allocationText(t) }}
+            </q-item-label>
+            <q-item-label v-if="statement.status !== 'applied'" caption>
+              <q-btn flat dense size="sm" color="blue-8" icon="call_split"
+                     :label="t.allocation && t.allocation.length ? 'Изменить разделение' : 'Разделить по категориям'"
+                     @click="openSplit(t)" />
+            </q-item-label>
             <q-item-label caption v-if="t.note" class="text-orange-9">
               {{ t.note }}
             </q-item-label>
@@ -142,6 +150,56 @@
       </q-item>
     </q-list>
 
+    <!-- Разделение одного платежа по категориям -->
+    <q-dialog v-model="splitDialog" persistent>
+      <q-card style="min-width: 340px; max-width: 460px">
+        <q-card-section class="text-h6">Разделить по категориям</q-card-section>
+        <q-card-section v-if="splitRow" class="q-gutter-sm">
+          <div class="text-body2">
+            Платёж {{ formatMoney(splitRow.amount) }} ₽ · {{ splitRow.purpose }}
+          </div>
+          <div v-for="(part, i) in splitParts" :key="i" class="row q-col-gutter-sm items-center">
+            <div class="col-6">
+              <q-select v-model="part.category" :options="splitCategoryOptions"
+                        emit-value map-options outlined dense label="Категория" />
+            </div>
+            <div class="col-4">
+              <q-input v-model="part.amount" outlined dense type="number" label="Сумма" />
+            </div>
+            <div class="col-2">
+              <q-btn flat round dense icon="close" @click="splitParts.splice(i, 1)" />
+            </div>
+          </div>
+          <q-btn v-if="splitParts.length < 3" flat dense size="sm" icon="add"
+                 label="Ещё категория" color="blue-8"
+                 @click="splitParts.push({ category: null, amount: '' })" />
+          <div class="text-caption"
+               :class="splitRest < 0 ? 'text-negative' : 'text-grey-8'">
+            <template v-if="splitRest < 0">
+              Части больше платежа на {{ formatMoney(-splitRest) }} ₽ — уменьшите.
+            </template>
+            <template v-else-if="splitRest > 0">
+              Не разделено {{ formatMoney(splitRest) }} ₽ — разнесутся как обычно:
+              сначала в категорию строки, потом в остальные начисления.
+            </template>
+            <template v-else>Разделено полностью.</template>
+          </div>
+          <div class="text-caption text-grey-7">
+            Если по категории долга меньше, чем указано, недостающее уйдёт в
+            другие начисления — сайт напишет об этом в примечании к строке.
+          </div>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="Убрать разделение" color="grey-8"
+                 @click="splitParts = []; saveSplit()" />
+          <q-btn flat label="Отмена" v-close-popup />
+          <q-btn color="blue-8" label="Сохранить" unelevated
+                 :disable="splitRest < 0 || !splitPartsValid"
+                 @click="saveSplit" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
     <!-- Загрузка -->
     <q-dialog v-model="uploadDialog">
       <q-card style="min-width: 340px; max-width: 460px">
@@ -183,7 +241,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useQuasar } from 'quasar'
 import api from 'src/api/client'
 
@@ -280,6 +338,50 @@ const categoryOptions = [
   { label: 'Целевой взнос', value: 'target' },
   { label: 'Электроэнергия', value: 'electricity' },
 ]
+
+const splitDialog = ref(false)
+const splitRow = ref(null)
+const splitParts = ref([])
+const splitCategoryOptions = categoryOptions.filter((o) => o.value)
+const categoryNames = Object.fromEntries(splitCategoryOptions.map((o) => [o.value, o.label]))
+
+function allocationText(row) {
+  return row.allocation
+    .map((p) => `${categoryNames[p.category] || p.category} ${formatMoney(p.amount)} ₽`)
+    .join(' + ')
+}
+
+const splitRest = computed(() => {
+  if (!splitRow.value) return 0
+  const used = splitParts.value.reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
+  return Math.round((Number(splitRow.value.amount) - used) * 100) / 100
+})
+
+const splitPartsValid = computed(() => splitParts.value.every(
+  (p) => p.category && Number(p.amount) > 0,
+) && new Set(splitParts.value.map((p) => p.category)).size === splitParts.value.length)
+
+function openSplit(row) {
+  splitRow.value = row
+  splitParts.value = (row.allocation && row.allocation.length)
+    ? row.allocation.map((p) => ({ ...p }))
+    : [{ category: 'membership', amount: '' }, { category: 'target', amount: '' }]
+  splitDialog.value = true
+}
+
+async function saveSplit() {
+  try {
+    const { data } = await api.patch(`/billing/transactions/${splitRow.value.id}/`,
+      { allocation: splitParts.value })
+    splitRow.value.allocation = data.allocation
+    splitDialog.value = false
+  } catch (e) {
+    const d = e?.response?.data
+    const msg = d?.allocation?.[0] || d?.detail || d?.non_field_errors?.[0]
+      || 'Не удалось сохранить разделение'
+    $q.notify({ type: 'negative', message: msg })
+  }
+}
 
 async function setCategory(transaction, category) {
   try {

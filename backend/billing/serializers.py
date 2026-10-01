@@ -167,6 +167,63 @@ class BankTransactionSerializer(serializers.ModelSerializer):
     category_display = serializers.CharField(source="get_category_display",
                                              read_only=True)
 
+    CATEGORIES = ("membership", "target", "electricity")
+
+    def validate(self, data):
+        if self.instance is not None and \
+                self.instance.status != BankTransaction.STATUS_NEW:
+            # После проведения правка уже ни на что не влияет: деньги
+            # разнесены. Принять её — значит показать на экране раскладку,
+            # которой в учёте нет.
+            raise serializers.ValidationError(
+                "Строка уже проведена — менять её нельзя. Ошиблись с "
+                "разнесением — перенесите оплату на вкладке «Начисления»."
+            )
+        plot = data.get("plot")
+        request = self.context.get("request")
+        org = getattr(request, "org", None)
+        if plot is not None and org is not None and plot.organization_id != org.pk:
+            # Поле plot принимало любой id: строку можно было привязать к
+            # участку другого товарищества.
+            raise serializers.ValidationError(
+                {"plot": "Участок не найден в этом товариществе."}
+            )
+        return data
+
+    def validate_allocation(self, value):
+        from decimal import Decimal, InvalidOperation
+
+        if value in (None, ""):
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Ожидается список частей.")
+        parts, seen = [], set()
+        for item in value:
+            if not isinstance(item, dict):
+                raise serializers.ValidationError("Каждая часть — категория и сумма.")
+            category = item.get("category")
+            if category not in self.CATEGORIES:
+                raise serializers.ValidationError(f"Неизвестная категория: {category!r}.")
+            if category in seen:
+                raise serializers.ValidationError(
+                    "Каждая категория — одной строкой: сложите суммы.")
+            seen.add(category)
+            try:
+                amount = Decimal(str(item.get("amount")).replace(",", "."))
+            except InvalidOperation:
+                raise serializers.ValidationError("Сумма части указана неверно.")
+            if amount <= 0:
+                raise serializers.ValidationError("Сумма части должна быть больше нуля.")
+            parts.append({"category": category,
+                          "amount": str(amount.quantize(Decimal("0.01")))})
+        total = sum(Decimal(p["amount"]) for p in parts)
+        if self.instance is not None and total > self.instance.amount:
+            raise serializers.ValidationError(
+                f"Части в сумме {total} ₽ больше самого платежа "
+                f"({self.instance.amount} ₽)."
+            )
+        return parts
+
     class Meta:
         model = BankTransaction
         exclude = ("organization",)
