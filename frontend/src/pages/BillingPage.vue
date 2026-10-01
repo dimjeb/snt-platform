@@ -138,7 +138,7 @@
         </q-banner>
         <q-btn
           v-if="auth.isTreasurer || auth.isChairman"
-          color="green-8" icon="add" label="Внести платёж"
+          color="green-8" icon="add" label="Принять платёж"
           class="q-mb-md full-width" outline
           @click="paymentDialog = true"
         />
@@ -383,21 +383,50 @@
       </q-card>
     </q-dialog>
 
-    <!-- Диалог: платёж -->
-    <q-dialog v-model="paymentDialog" persistent>
-      <q-card style="min-width:320px">
-        <q-card-section class="text-h6">Внести платёж</q-card-section>
-        <q-card-section>
-          <q-form class="q-gutter-sm">
-            <q-select v-model="payForm.charge" label="Начисление" outlined dense :options="chargeOptions" emit-value map-options />
-            <q-input v-model="payForm.amount" label="Сумма (₽) *" outlined dense type="number" />
-            <q-input v-model="payForm.date" label="Дата" outlined dense type="date" />
-            <q-select v-model="payForm.method" label="Способ" outlined dense :options="methodOptions" emit-value map-options />
-          </q-form>
+    <!-- Диалог: деньги, которые казначей принял сам -->
+    <q-dialog v-model="paymentDialog" persistent @show="loadPlots">
+      <q-card style="min-width:340px;max-width:500px">
+        <q-card-section class="text-h6">Принять платёж</q-card-section>
+        <q-card-section class="q-gutter-sm">
+          <q-select
+            v-model="payForm.plot"
+            :options="plotOptions" :loading="plotsLoading"
+            option-label="label" option-value="value"
+            emit-value map-options use-input input-debounce="0"
+            outlined dense label="Участок — номер или фамилия *"
+            @filter="filterPlots"
+            @update:model-value="loadPlotDebts"
+          />
+          <q-select
+            v-if="payForm.plot"
+            v-model="payForm.for"
+            :options="payForOptions" :loading="plotDebtsLoading"
+            emit-value map-options outlined dense label="За что *"
+            @update:model-value="suggestPayAmount"
+          />
+          <div v-if="payForm.plot && !plotDebtsLoading && !plotDebts.length"
+               class="text-caption text-grey-8 charge-preview">
+            Долгов у участка нет. Деньги лягут авансом и зачтутся в
+            следующие начисления — или выберите категорию, чтобы аванс
+            ждал именно её.
+          </div>
+          <q-input v-model="payForm.amount" label="Сумма (₽) *" outlined dense type="number" />
+          <q-input v-model="payForm.date" label="Дата" outlined dense type="date" />
+          <q-select v-model="payForm.method" label="Способ" outlined dense
+                    :options="methodOptions" emit-value map-options />
+          <q-input v-model="payForm.note" label="Комментарий" outlined dense
+                   hint="Например: «принял на собрании», номер квитанции" />
+          <div class="text-caption text-grey-7">
+            Деньги разносятся так же, как из банковской выписки: в выбранное
+            начисление или категорию, в чужую категорию не уходят, излишек
+            ложится авансом.
+          </div>
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="green-8" label="Сохранить" :loading="actionLoading" @click="createPayment" />
+          <q-btn color="green-8" label="Принять" :loading="actionLoading"
+                 :disable="!payForm.plot || !Number(payForm.amount)"
+                 @click="createPayment" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -455,8 +484,69 @@ const chargeTypesLoading = ref(false)
 const allPlots = ref([])
 const plotOptions = ref([])
 const plotsLoading = ref(false)
-const payForm = ref({ charge: null, amount: '', date: new Date().toISOString().slice(0, 10), method: 'cash' })
-const chargeOptions = ref([])
+function emptyPayForm() {
+  return { plot: null, for: 'auto', amount: '', note: '',
+    date: new Date().toISOString().slice(0, 10), method: 'cash' }
+}
+const payForm = ref(emptyPayForm())
+const plotDebts = ref([])
+const plotDebtsLoading = ref(false)
+
+const categoryNames = { membership: 'Членский взнос', target: 'Целевой взнос',
+  electricity: 'Электроэнергия' }
+
+// «За что»: все долги по порядку, категория целиком или одно начисление.
+// Категории показываем и без долга по ним — тогда деньги лягут авансом,
+// который ждёт именно эту категорию (целевой за следующий год и т. п.).
+const payForOptions = computed(() => {
+  const total = plotDebts.value.reduce((sum, c) => sum + Number(c.debt), 0)
+  const options = [{ label: `Все долги по порядку — ${formatMoney(total)} ₽`, value: 'auto' }]
+  for (const [cat, name] of Object.entries(categoryNames)) {
+    const debt = plotDebts.value
+      .filter((c) => c.category === cat)
+      .reduce((sum, c) => sum + Number(c.debt), 0)
+    options.push({ label: debt ? `${name} — долг ${formatMoney(debt)} ₽` : `${name} — авансом`,
+      value: cat })
+  }
+  for (const c of plotDebts.value) {
+    options.push({
+      label: `${c.charge_type_name} · ${c.period_label} — долг ${formatMoney(c.debt)} ₽`,
+      value: `charge:${c.id}`,
+    })
+  }
+  return options
+})
+
+async function loadPlotDebts(plotId) {
+  plotDebts.value = []
+  payForm.value.for = 'auto'
+  if (!plotId) return
+  plotDebtsLoading.value = true
+  try {
+    const [{ data }, types] = await Promise.all([
+      api.get(`/billing/charges/?plot=${plotId}&page_size=500`),
+      api.get('/billing/charge-types/?page_size=200'),
+    ])
+    const categoryOf = Object.fromEntries(
+      (types.data.results || types.data).map((t) => [t.id, t.category]))
+    plotDebts.value = (data.results || data)
+      .filter((c) => Number(c.debt) > 0)
+      .map((c) => ({ ...c, category: categoryOf[c.charge_type] }))
+    suggestPayAmount('auto')
+  } finally { plotDebtsLoading.value = false }
+}
+
+// Сумма по умолчанию — долг по выбранному: чаще всего платят ровно его.
+function suggestPayAmount(choice) {
+  let debts = plotDebts.value
+  if (choice && choice.startsWith('charge:')) {
+    debts = debts.filter((c) => `charge:${c.id}` === choice)
+  } else if (choice && choice !== 'auto') {
+    debts = debts.filter((c) => c.category === choice)
+  }
+  const sum = debts.reduce((total, c) => total + Number(c.debt), 0)
+  if (sum) payForm.value.amount = String(Math.round(sum * 100) / 100)
+}
 
 const methodOptions = [
   { label: 'Наличные', value: 'cash' },
@@ -546,10 +636,6 @@ async function onPeriodChange(pid) {
   payments.value = pay.data.results || pay.data
   chargesTotal.value = ch.data.count ?? charges.value.length
   paymentsTotal.value = pay.data.count ?? payments.value.length
-  chargeOptions.value = (ch.data.results || ch.data).map((c) => ({
-    label: `Уч.${c.plot_number} ${c.charge_type_name} ${formatMoney(c.amount)}₽`,
-    value: c.id,
-  }))
 }
 
 // Сообщение с сервера важнее общего «Ошибка»: именно так пользователь
@@ -945,11 +1031,23 @@ async function doTransfer() {
 async function createPayment() {
   actionLoading.value = true
   try {
-    await api.post('/billing/payments/', payForm.value)
+    const { data } = await api.post('/billing/payments/receive/', payForm.value)
     paymentDialog.value = false
+    payForm.value = emptyPayForm()
+    plotDebts.value = []
     await onPeriodChange(selectedPeriod.value)
-    $q.notify({ type: 'positive', message: 'Платёж внесён' })
-  } catch (e) { $q.notify({ type: 'negative', message: errText(e, 'Ошибка') }) }
+    // Куда легли деньги — словами: казначей должен видеть раскладку,
+    // а не просто «сохранено».
+    const parts = data.paid.map((p) => `${p.name} (${p.period}) — ${formatMoney(p.amount)} ₽`)
+    for (const e of data.earmarked) {
+      parts.push(`авансом на «${e.label}» — ${formatMoney(e.amount)} ₽`)
+    }
+    if (Number(data.advance)) parts.push(`общим авансом — ${formatMoney(data.advance)} ₽`)
+    $q.notify({
+      type: 'positive', multiLine: true, timeout: 8000,
+      message: `Платёж принят: ${parts.join('; ')}`,
+    })
+  } catch (e) { $q.notify({ type: 'negative', message: errText(e, 'Не удалось принять платёж') }) }
   finally { actionLoading.value = false }
 }
 

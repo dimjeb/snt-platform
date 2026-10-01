@@ -262,6 +262,90 @@ class PaymentViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     permission_classes = [IsTreasurer]
     filterset_fields = ["charge", "method", "is_cancelled"]
 
+    @action(detail=False, methods=["post"])
+    def receive(self, request):
+        """
+        Деньги, которые казначей принял сам: наличными, на карту и т. п.
+
+        Тело: {"plot": id, "amount": "5000", "date": "2026-10-01",
+               "method": "cash", "for": "auto" | "membership" | "target" |
+               "electricity" | "charge:<id>", "note": "..."}
+
+        Разносится по тем же правилам, что и выписка (billing.allocation):
+        в чужую категорию деньги не уходят, излишек ложится авансом.
+        """
+        from datetime import date as date_cls
+        from decimal import Decimal, InvalidOperation
+
+        from django.db import transaction
+
+        from members.models import Plot
+
+        from .allocation import allocate
+        from .statement_service import CATEGORY_LABELS
+
+        org = require_org(request)
+        data = request.data
+        try:
+            plot = Plot.objects.get(pk=data.get("plot"), organization=org)
+        except (Plot.DoesNotExist, ValueError, TypeError):
+            return Response({"detail": "Участок не найден."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            amount = Decimal(str(data.get("amount", "")).replace(",", "."))
+        except InvalidOperation:
+            amount = Decimal("0")
+        if amount <= 0:
+            return Response({"detail": "Укажите сумму больше нуля."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            when = date_cls.fromisoformat(data.get("date") or "")
+        except ValueError:
+            return Response({"detail": "Дата указана неверно."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        method = data.get("method") or Payment.METHOD_CASH
+        allowed = {Payment.METHOD_CASH, Payment.METHOD_BANK, Payment.METHOD_SBP,
+                   Payment.METHOD_CARD, Payment.METHOD_OTHER}
+        if method not in allowed:
+            return Response({"detail": "Неизвестный способ оплаты."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        target = str(data.get("for") or "auto")
+        category, charge = "", None
+        if target.startswith("charge:"):
+            charge_id = target.split(":", 1)[1]
+            charge = (Charge.objects.filter(pk=int(charge_id), organization=org,
+                                            plot=plot).first()
+                      if charge_id.isdigit() else None)
+            if charge is None:
+                return Response({"detail": "Начисление не найдено у этого участка."},
+                                status=status.HTTP_400_BAD_REQUEST)
+        elif target in CATEGORY_LABELS:
+            category = target
+        elif target != "auto":
+            return Response({"detail": "Не понятно, за что платёж."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        note = str(data.get("note") or "")[:500]
+        label = dict(Payment.METHOD_CHOICES).get(method, method)
+        with transaction.atomic():
+            done = allocate(
+                plot, amount, date=when, category=category, charge=charge,
+                credit_notes=f"{label.lower()} {when:%d.%m.%Y}",
+                payment_fields={
+                    "method": method,
+                    "notes": note or f"Принято казначеем: {label.lower()}",
+                    "recorded_by": request.user,
+                },
+            )
+        return Response({
+            "paid": [{"charge": c.pk, "name": c.charge_type.name,
+                      "period": str(c.period), "amount": a} for c, a in done.paid],
+            "earmarked": [{"category": k, "label": CATEGORY_LABELS.get(k, k),
+                           "amount": v} for k, v in done.earmarked.items()],
+            "advance": done.advance,
+        }, status=status.HTTP_201_CREATED)
+
     def perform_create(self, serializer):
         serializer.save(
             organization=require_org(self.request),

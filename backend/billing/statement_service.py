@@ -17,9 +17,9 @@ from decimal import Decimal
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from .credits import add_credit
+from .allocation import allocate
 from .matching import MATCH_NONE, MATCH_PLOT, extract_category, match_documents
-from .models import BankStatement, BankTransaction, Charge, Payment
+from .models import BankStatement, BankTransaction, Payment
 from .statement import parse_statement
 
 log = logging.getLogger(__name__)
@@ -131,111 +131,34 @@ def apply_statement(statement, *, user=None):
                 skipped += 1
                 continue
 
-            charges = list(
-                Charge.objects.filter(
-                    organization=statement.organization, plot=row.plot
-                )
-                .select_related("charge_type", "period")
-                .prefetch_related("payments")
-                .order_by("period__year", "period__month", "pk")
+            done = allocate(
+                row.plot, row.amount, date=row.date,
+                category=row.category, parts=row.allocation,
+                transaction_row=row,
+                credit_notes=f"выписка {statement.file_name}",
+                payment_fields={
+                    "method": Payment.METHOD_BANK,
+                    "external_ref": row.doc_number,
+                    "notes": f"Выписка {statement.file_name}",
+                    "recorded_by": user,
+                    "bank_transaction": row,
+                },
             )
-
-            def pay(candidates, limit):
-                """Разнести не больше limit ₽ по candidates от старых к новым."""
-                spent = Decimal("0")
-                for charge in candidates:
-                    if spent >= limit:
-                        break
-                    debt = charge.debt
-                    if debt <= 0:
-                        continue
-                    take = min(debt, limit - spent)
-                    Payment.objects.create(
-                        organization=statement.organization,
-                        charge=charge,
-                        date=row.date,
-                        amount=take,
-                        method=Payment.METHOD_BANK,
-                        external_ref=row.doc_number,
-                        notes=f"Выписка {statement.file_name}",
-                        recorded_by=user,
-                        bank_transaction=row,
-                    )
-                    # Платёж только что создан, а prefetch его не видит:
-                    # сбрасываем кэш, иначе следующая часть того же
-                    # перевода посчитала бы долг без него.
-                    getattr(charge, "_prefetched_objects_cache", {}).pop("payments", None)
-                    spent += take
-                return spent
-
-            remaining = row.amount
-            # Деньги с назначением — по корзинам: {категория: сколько ждёт
-            # своих начислений}. В чужую категорию они не уходят никогда:
-            # человек писал «целевой», и закрыть ими членский значит
-            # распорядиться чужими деньгами не так, как он велел.
-            earmarked = {}
-
-            for part in row.allocation or []:
-                want = min(Decimal(part["amount"]), remaining)
-                same = [c for c in charges
-                        if c.charge_type.category == part["category"]]
-                got = pay(same, want)
-                remaining -= want
-                if got < want:
-                    earmarked[part["category"]] = (
-                        earmarked.get(part["category"], Decimal("0")) + want - got)
-
-            if row.category:
-                same = [c for c in charges
-                        if c.charge_type.category == row.category]
-                got = pay(same, remaining)
-                if got < remaining:
-                    earmarked[row.category] = (
-                        earmarked.get(row.category, Decimal("0")) + remaining - got)
-                remaining = Decimal("0")
-            else:
-                # Назначение не названо — как раньше: от старых к новым
-                # по всем начислениям участка, остаток в общий аванс.
-                remaining -= pay(charges, remaining)
-
             row.note = ""
-            for category, amount in earmarked.items():
+            for category, amount in done.earmarked.items():
                 label = CATEGORY_LABELS.get(category, category)
-                add_credit(
-                    row.plot, amount=amount, date=row.date,
-                    organization=statement.organization,
-                    transaction_row=row, category=category,
-                    notes=f"Ждёт начислений «{label}» — выписка {statement.file_name}",
-                )
                 row.note += (f"{amount} ₽ отложено авансом на {label} взнос — "
                              f"зачтётся, когда его начислят. ")
-
+            if done.advance:
+                row.note += (f"{done.advance} ₽ зачислено авансом — "
+                             f"начислений не хватило.")
+                log.info("Выписка %s: по участку %s зачислено авансом %s ₽",
+                         statement.pk, row.plot.number, done.advance)
             row.status = BankTransaction.STATUS_APPLIED
-            if remaining > 0:
-                # Заплатили больше, чем начислено — обычное дело, когда
-                # платят вперёд за сезон. Кладём остаток на лицевой счёт
-                # участка: он зачтётся сам, как только появятся новые
-                # начисления. Просто оставить деньги «нигде» нельзя —
-                # они чужие.
-                add_credit(
-                    row.plot, amount=remaining, date=row.date,
-                    organization=statement.organization,
-                    transaction_row=row,
-                    notes=f"Переплата по выписке {statement.file_name}",
-                )
-                row.note += (
-                    f"{remaining} ₽ зачислено авансом — начислений не хватило."
-                )
-                log.info(
-                    "Выписка %s: по участку %s зачислено авансом %s ₽",
-                    statement.pk, row.plot.number, remaining,
-                )
             row.save(update_fields=["status", "note", "updated_at"])
             applied += 1
-            # Разнесено по начислениям — без того, что легло авансом:
-            # и общим, и отложенным под свою категорию.
-            total += (row.amount - max(remaining, Decimal("0"))
-                      - sum(earmarked.values(), Decimal("0")))
+            # Разнесено по начислениям — без того, что легло авансом.
+            total += done.paid_total
 
         statement.status = BankStatement.STATUS_APPLIED
         statement.applied_at = timezone.now()
