@@ -53,6 +53,11 @@
                     долг {{ formatMoney(item.debt) }}
                     <span class="text-grey-7">из {{ formatMoney(item.charged) }}</span>
                   </span>
+                  <span v-if="Number(item.debt) > 0 && item.due_date"
+                        :class="item.overdue ? 'text-negative text-weight-medium' : 'text-grey-7'">
+                    {{ item.overdue ? 'просрочено, срок был' : 'оплатить до' }}
+                    {{ formatDate(item.due_date) }}
+                  </span>
                   <span v-else-if="Number(item.debt) < 0" class="text-blue-8">
                     переплата {{ formatMoney(-item.debt) }}
                   </span>
