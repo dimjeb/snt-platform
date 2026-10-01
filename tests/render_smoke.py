@@ -424,10 +424,16 @@ with sync_playwright() as pw:
     page.wait_for_timeout(2000)
     loaded = page.evaluate(
         "() => { const i = document.querySelector('img.snt-org-logo');"
-        " return i ? [i.getAttribute('src'), i.naturalWidth] : null }")
-    verify("логотип загружен и сразу виден в шапке",
-           loaded is not None and loaded[0].startswith("/media/logos/") and loaded[1] == 120,
+        " if (!i) return null;"
+        " const col = i.closest('.q-drawer').getBoundingClientRect().width;"
+        " return [i.getAttribute('src'), i.naturalWidth,"
+        "         Math.round(i.getBoundingClientRect().width), Math.round(col)] }")
+    verify("логотип загружен и сразу виден в меню во всю ширину колонки",
+           loaded is not None and loaded[0].startswith("/media/logos/") and loaded[1] == 120
+           and loaded[2] >= loaded[3] - 2,
            str(loaded))
+    verify("подписи под логотипом нет",
+           page.locator(".snt-drawer-logo").inner_text().strip() == "", "")
 
     # 10. Оплата с телефона: камерой свой экран не отсканировать, поэтому
     #     QR сохраняется в галерею, а реквизиты копируются по одному.
@@ -452,7 +458,7 @@ with sync_playwright() as pw:
     member_logo = mobile.evaluate(
         "() => { const i = document.querySelector('img.snt-org-logo');"
         " return i ? i.naturalWidth : 0 }")
-    verify("рядовой член видит логотип в шапке (и на телефоне)",
+    verify("рядовой член видит логотип в меню (и на телефоне)",
            member_logo == 120, f"ширина {member_logo}")
     mobile.get_by_role("button", name="Оплатить по QR из банка").click()
     mobile.wait_for_timeout(2500)

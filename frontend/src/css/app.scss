@@ -25,15 +25,16 @@ body {
 }
 .snt-toolbar { min-height: 56px; }
 .snt-logo { opacity: 0.95; }
-/* Логотип товарищества: на белой подложке — у большинства логотипов
-   белый или прозрачный фон, на зелёной шапке иначе пропадут края. */
-.snt-org-logo {
-  height: 36px;
-  max-width: 120px;
-  object-fit: contain;
+/* Логотип товарищества над профилем в меню: во всю ширину колонки,
+   на белой подложке — у большинства логотипов белый или прозрачный фон. */
+.snt-drawer-logo {
   background: #fff;
-  border-radius: 6px;
-  padding: 2px 4px;
+  border-bottom: 1px solid rgba(0,0,0,0.07);
+}
+.snt-org-logo {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 .snt-page-title {
   font-size: 16px;
