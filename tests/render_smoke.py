@@ -428,9 +428,10 @@ with sync_playwright() as pw:
         " const col = i.closest('.q-drawer').getBoundingClientRect().width;"
         " return [i.getAttribute('src'), i.naturalWidth,"
         "         Math.round(i.getBoundingClientRect().width), Math.round(col)] }")
-    verify("логотип загружен и сразу виден в меню во всю ширину колонки",
+    # Поля по 2 мм (≈7,6 px) с каждой стороны: картинка уже колонки на ~15 px.
+    verify("логотип в меню во всю ширину колонки за вычетом полей 2 мм",
            loaded is not None and loaded[0].startswith("/media/logos/") and loaded[1] == 120
-           and loaded[2] >= loaded[3] - 2,
+           and loaded[3] - 20 <= loaded[2] <= loaded[3] - 12,
            str(loaded))
     verify("подписи под логотипом нет",
            page.locator(".snt-drawer-logo").inner_text().strip() == "", "")
