@@ -1016,7 +1016,7 @@ class Command(BaseCommand):
         from decimal import Decimal
 
         from billing.models import (BankStatement, BankTransaction, BillingPeriod,
-                                    Charge, ChargeType, Payment)
+                                    Charge, ChargeType, Payment, PlotCredit)
         from billing.statement_service import apply_statement
         from billing.transfers import TransferError, transfer_payment
         from members.models import Member, Plot, PlotOwnership
@@ -1112,12 +1112,126 @@ class Command(BaseCommand):
         short_row.refresh_from_db()
         small_member.refresh_from_db()
         big_target.refresh_from_db()
-        self.verify("часть больше долга: лишнее ушло в другие начисления, не потерялось",
+        from billing.credits import credit_balance
+
+        self.verify("часть больше долга: лишнее ждёт своей категории, в чужую не ушло",
                     small_member.paid_amount == Decimal("1000.00")
-                    and big_target.paid_amount == Decimal("2000.00"),
-                    f"членский {small_member.paid_amount}, целевой {big_target.paid_amount}")
-        self.verify("нехватка долга по категории названа в примечании",
-                    "членский — 2000.00 ₽" in (short_row.note or ""), short_row.note)
+                    and big_target.paid_amount == Decimal("0")
+                    and credit_balance(short_plot, "membership") == Decimal("2000.00"),
+                    f"членский {small_member.paid_amount}, целевой {big_target.paid_amount}, "
+                    f"членский аванс {credit_balance(short_plot, 'membership')}")
+        self.verify("отложенный аванс назван в примечании",
+                    "2000.00 ₽ отложено авансом на членский" in (short_row.note or ""),
+                    short_row.note)
+
+        # --- главный случай: «целевой» есть, целевого начисления нет ---
+        # Ровно сентябрьская выписка: целевой за 2027 ещё не начислен,
+        # а членский (по соткам) — уже. Раньше 6410 «целевых» закрывали
+        # членский 5980, остаток 430 ложился общим авансом.
+        lone_plot = Plot.objects.create(organization=org, number="12")
+        PlotOwnership.objects.create(organization=org, plot=lone_plot, member=owner,
+                                     date_from=date(2026, 1, 1))
+        lone_member = Charge.objects.create(organization=org, period=new_period,
+                                            plot=lone_plot, charge_type=membership,
+                                            amount=Decimal("5980.00"))
+        lone_statement = BankStatement.objects.create(organization=org,
+                                                      file_name="lone.xlsx")
+        lone_row = BankTransaction.objects.create(
+            organization=org, statement=lone_statement, doc_number="12",
+            date=date(2026, 9, 9), amount=Decimal("6410.00"),
+            purpose="ЦЕЛЕВОЙ ВЗНОС ЗА УЧАСТОК № 12", plot=lone_plot, member=owner,
+            match_kind=BankTransaction.MATCH_PLOT, category="target")
+        apply_statement(lone_statement)
+        lone_member.refresh_from_db()
+        self.verify("«целевые» деньги не закрыли членский",
+                    lone_member.paid_amount == 0, lone_member.paid_amount)
+        self.verify("вся сумма ждёт целевой взнос авансом",
+                    credit_balance(lone_plot, "target") == Decimal("6410.00")
+                    and credit_balance(lone_plot, "") == 0,
+                    f"целевой {credit_balance(lone_plot, 'target')}, "
+                    f"общий {credit_balance(lone_plot, '')}")
+        self.verify("в членский из этой строки не создано ни одного платежа",
+                    not Payment.objects.filter(charge=lone_member).exists())
+        self.verify("платежи строки помечены ссылкой на неё",
+                    all(pay.bank_transaction_id == split_row.pk
+                        for pay in Payment.objects.filter(external_ref="2",
+                                                          organization=org)))
+
+        from billing.services import create_target_charges
+        create_target_charges(new_period, target, amount=Decimal("6410.00"),
+                              plot_ids=[lone_plot.pk])
+        lone_target = Charge.objects.get(plot=lone_plot, charge_type=target)
+        lone_member.refresh_from_db()
+        self.verify("когда целевой начислили — аванс зачёлся именно в него",
+                    lone_target.paid_amount == Decimal("6410.00")
+                    and lone_member.paid_amount == 0,
+                    f"целевой {lone_target.paid_amount}, членский {lone_member.paid_amount}")
+
+        # --- исправление уже проведённой по-старому выписки ---
+        legacy_plot = Plot.objects.create(organization=org, number="14")
+        PlotOwnership.objects.create(organization=org, plot=legacy_plot, member=owner,
+                                     date_from=date(2026, 1, 1))
+        legacy_member = Charge.objects.create(organization=org, period=new_period,
+                                              plot=legacy_plot, charge_type=membership,
+                                              amount=Decimal("5980.00"))
+        penalty_type = ChargeType.objects.create(
+            organization=org, category=ChargeType.TYPE_PENALTY, name="Пени")
+        legacy_penalty = Charge.objects.create(organization=org, period=new_period,
+                                               plot=legacy_plot, charge_type=penalty_type,
+                                               amount=Decimal("100.00"))
+        legacy_statement = BankStatement.objects.create(
+            organization=org, file_name="legacy.xlsx",
+            status=BankStatement.STATUS_APPLIED)
+        legacy_row = BankTransaction.objects.create(
+            organization=org, statement=legacy_statement, doc_number="14",
+            date=date(2026, 9, 9), amount=Decimal("6410.00"),
+            purpose="ЦЕЛЕВОЙ ВЗНОС УЧ 14", plot=legacy_plot, member=owner,
+            match_kind=BankTransaction.MATCH_PLOT, category="target",
+            status=BankTransaction.STATUS_APPLIED)
+        # Как раскладывала старая версия: 5980 в членский без ссылки на
+        # строку, 430 общим авансом, из которого 100 потом ушли в пени.
+        Payment.objects.create(organization=org, charge=legacy_member,
+                               date=date(2026, 9, 9), amount=Decimal("5980.00"),
+                               method=Payment.METHOD_BANK, external_ref="14",
+                               notes="Выписка legacy.xlsx")
+        PlotCredit.objects.create(organization=org, plot=legacy_plot,
+                                  date=date(2026, 9, 9), amount=Decimal("430.00"),
+                                  transaction=legacy_row, notes="Переплата")
+        spent_pay = Payment.objects.create(organization=org, charge=legacy_penalty,
+                                           date=date(2026, 9, 30),
+                                           amount=Decimal("100.00"),
+                                           method=Payment.METHOD_BANK,
+                                           notes="Зачтено из аванса")
+        PlotCredit.objects.create(organization=org, plot=legacy_plot,
+                                  date=date(2026, 9, 30), amount=Decimal("-100.00"),
+                                  charge=legacy_penalty, payment=spent_pay,
+                                  notes="Зачтено в «Пени»")
+
+        from django.core.management import call_command
+        call_command("fix_earmarked_statements", "--org", str(org.pk), verbosity=0)
+        legacy_member.refresh_from_db()
+        legacy_penalty.refresh_from_db()
+        self.verify("исправление: членский больше не закрыт целевыми деньгами",
+                    legacy_member.paid_amount == 0, legacy_member.paid_amount)
+        self.verify("исправление: вся сумма перевода ждёт целевой взнос",
+                    credit_balance(legacy_plot, "target") == Decimal("6410.00"),
+                    credit_balance(legacy_plot, "target"))
+        self.verify("исправление: зачёт целевых денег в пени отменён",
+                    legacy_penalty.paid_amount == 0
+                    and credit_balance(legacy_plot, "") == 0,
+                    f"пени оплачены {legacy_penalty.paid_amount}, "
+                    f"общий аванс {credit_balance(legacy_plot, '')}")
+        self.verify("исправление: исходный платёж не удалён",
+                    Payment.objects.filter(charge=legacy_member,
+                                           amount=Decimal("5980.00")).exists())
+
+        call_command("fix_earmarked_statements", "--org", str(org.pk), verbosity=0)
+        legacy_member.refresh_from_db()
+        self.verify("повторный запуск исправления ничего не меняет",
+                    legacy_member.paid_amount == 0
+                    and credit_balance(legacy_plot, "target") == Decimal("6410.00"),
+                    f"членский {legacy_member.paid_amount}, "
+                    f"целевой аванс {credit_balance(legacy_plot, 'target')}")
 
         # --- через API: правка строки выписки ---
         api_statement = BankStatement.objects.create(
@@ -1209,8 +1323,12 @@ class Command(BaseCommand):
                                            amount=Decimal("2000.00")).exists())
         self.verify("перенос записан парой со ссылкой друг на друга",
                     Payment.objects.filter(method=Payment.METHOD_TRANSFER,
-                                           organization=org)
-                    .values("external_ref").distinct().count() == 1)
+                                           organization=org,
+                                           external_ref__startswith="transfer-")
+                    .values("external_ref").distinct().count() == 1
+                    and Payment.objects.filter(
+                        external_ref__startswith="transfer-",
+                        organization=org).count() == 2)
 
         def refused(src, dst, amount):
             try:

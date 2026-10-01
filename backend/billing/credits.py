@@ -21,28 +21,57 @@ from .models import Charge, Payment, PlotCredit
 log = logging.getLogger(__name__)
 
 
-def credit_balance(plot) -> Decimal:
-    """Остаток аванса по участку."""
-    total = PlotCredit.objects.filter(plot=plot).aggregate(
-        total=Sum("amount")
-    )["total"]
+def credit_balance(plot, category=None) -> Decimal:
+    """
+    Остаток аванса по участку.
+
+    category=None — весь аванс; "" — только общий; "target" и т. п. —
+    только деньги, которые ждут начислений этой категории.
+    """
+    rows = PlotCredit.objects.filter(plot=plot)
+    if category is not None:
+        rows = rows.filter(category=category)
+    total = rows.aggregate(total=Sum("amount"))["total"]
     return total or Decimal("0")
 
 
+def credit_buckets(plot) -> dict:
+    """Остатки аванса участка по назначению: {"": общий, "target": …}."""
+    rows = (PlotCredit.objects.filter(plot=plot)
+            .values("category").annotate(total=Sum("amount")))
+    return {r["category"]: r["total"] or Decimal("0") for r in rows}
+
+
 def credit_balances(organization) -> dict:
-    """Остатки авансов по всем участкам организации: {plot_id: сумма}."""
+    """
+    Участки, где есть что тратить: {plot_id: сумма положительных корзин}.
+
+    Смотрим корзины, а не общий итог: у участка может лежать целевой
+    аванс при нулевом итоге, если общая корзина ушла в минус после
+    исправления старой раскладки (см. fix_earmarked_statements).
+    """
     rows = (
         PlotCredit.objects.filter(organization=organization)
-        .values("plot_id")
+        .values("plot_id", "category")
         .annotate(total=Sum("amount"))
     )
-    return {r["plot_id"]: r["total"] or Decimal("0") for r in rows
-            if (r["total"] or 0) != 0}
+    result = {}
+    for r in rows:
+        total = r["total"] or Decimal("0")
+        if total > 0:
+            result[r["plot_id"]] = result.get(r["plot_id"], Decimal("0")) + total
+    return result
 
 
 def add_credit(plot, *, amount, date, organization=None, transaction_row=None,
-               notes="", source=PlotCredit.SOURCE_STATEMENT, period=None):
-    """Зачислить аванс."""
+               notes="", source=PlotCredit.SOURCE_STATEMENT, period=None,
+               category=""):
+    """
+    Зачислить аванс.
+
+    category — на что эти деньги. Целевой аванс гасит только целевые
+    начисления и ждёт их, сколько потребуется; общий — любые.
+    """
     amount = Decimal(amount)
     if amount <= 0:
         return None
@@ -50,6 +79,7 @@ def add_credit(plot, *, amount, date, organization=None, transaction_row=None,
         organization=organization or plot.organization,
         plot=plot, date=date, amount=amount, source=source, period=period,
         transaction=transaction_row, notes=notes or "Переплата по выписке",
+        category=category,
     )
 
 
@@ -88,57 +118,69 @@ def spend_credit(plot, *, user=None, today=None):
     """
     Пустить аванс участка на его непогашенные начисления.
 
+    Аванс лежит «корзинами» по назначению. Целевой гасит только целевые
+    начисления, членский — только членские; общий — любые. Сначала
+    тратятся корзины с назначением, потом общая: иначе общие деньги
+    могли бы занять целевое начисление, и целевой аванс остался бы
+    лежать без дела.
+
     Гасим от старых к новым — как и везде в проекте. За каждое списание
     создаётся и платёж (он уменьшает долг), и отрицательная строка ленты
-    (она уменьшает аванс), одной транзакцией: если уцелеет только одно
-    из двух, деньги либо задвоятся, либо пропадут.
+    той же корзины (она уменьшает аванс), одной транзакцией: если уцелеет
+    только одно из двух, деньги либо задвоятся, либо пропадут.
     """
     from django.utils import timezone
 
-    balance = credit_balance(plot)
-    if balance <= 0:
-        return {"spent": Decimal("0"), "left": balance, "charges": 0}
-
     today = today or timezone.localdate()
-    charges = (
-        Charge.objects.filter(organization=plot.organization, plot=plot)
-        .select_related("charge_type", "period")
-        .prefetch_related("payments")
-        .order_by("period__year", "period__month", "pk")
-        .select_for_update()
-    )
+    buckets = credit_buckets(plot)
+    order = sorted((c for c, total in buckets.items() if total > 0),
+                   key=lambda c: c == "")
 
     spent = Decimal("0")
     touched = 0
-    for charge in charges:
-        if balance <= 0:
-            break
-        debt = charge.debt
-        if debt <= 0:
-            continue
-        take = min(debt, balance)
+    for category in order:
+        balance = buckets[category]
+        charges = (
+            Charge.objects.filter(organization=plot.organization, plot=plot)
+            .select_related("charge_type", "period")
+            .prefetch_related("payments")
+            .order_by("period__year", "period__month", "pk")
+            .select_for_update(of=("self",))
+        )
+        if category:
+            charges = charges.filter(charge_type__category=category)
+        # Выборка заново для каждой корзины: платежи предыдущей корзины
+        # в кэше prefetch не видны, и долг посчитался бы по устаревшим
+        # данным — вышла бы переплата.
+        for charge in charges:
+            if balance <= 0:
+                break
+            debt = charge.debt
+            if debt <= 0:
+                continue
+            take = min(debt, balance)
 
-        payment = Payment.objects.create(
-            organization=plot.organization,
-            charge=charge, date=today, amount=take,
-            method=Payment.METHOD_BANK,
-            notes="Зачтено из аванса",
-            recorded_by=user,
-        )
-        PlotCredit.objects.create(
-            organization=plot.organization,
-            plot=plot, date=today, amount=-take,
-            charge=charge, payment=payment,
-            notes=f"Зачтено в «{charge.charge_type.name}»",
-        )
-        balance -= take
-        spent += take
-        touched += 1
+            payment = Payment.objects.create(
+                organization=plot.organization,
+                charge=charge, date=today, amount=take,
+                method=Payment.METHOD_BANK,
+                notes="Зачтено из аванса",
+                recorded_by=user,
+            )
+            PlotCredit.objects.create(
+                organization=plot.organization,
+                plot=plot, date=today, amount=-take, category=category,
+                charge=charge, payment=payment,
+                notes=f"Зачтено в «{charge.charge_type.name}»",
+            )
+            balance -= take
+            spent += take
+            touched += 1
 
     if spent:
         log.info("Участок %s: зачтено из аванса %s ₽ на %s начислений",
                  plot.number, spent, touched)
-    return {"spent": spent, "left": balance, "charges": touched}
+    return {"spent": spent, "left": credit_balance(plot), "charges": touched}
 
 
 def spend_all_credits(organization, *, user=None):

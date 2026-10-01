@@ -159,6 +159,7 @@ def apply_statement(statement, *, user=None):
                         external_ref=row.doc_number,
                         notes=f"Выписка {statement.file_name}",
                         recorded_by=user,
+                        bank_transaction=row,
                     )
                     # Платёж только что создан, а prefetch его не видит:
                     # сбрасываем кэш, иначе следующая часть того же
@@ -168,35 +169,46 @@ def apply_statement(statement, *, user=None):
                 return spent
 
             remaining = row.amount
-            short = []
-            # Сначала части, которые казначей разнёс руками: «6000 в
-            # членский, 4000 в целевой». Если по категории долга меньше,
-            # чем указано, недостающее уходит в общий остаток — и это
-            # пишется в примечание, чтобы было видно, что раскладка
-            # выполнилась не полностью.
+            # Деньги с назначением — по корзинам: {категория: сколько ждёт
+            # своих начислений}. В чужую категорию они не уходят никогда:
+            # человек писал «целевой», и закрыть ими членский значит
+            # распорядиться чужими деньгами не так, как он велел.
+            earmarked = {}
+
             for part in row.allocation or []:
                 want = min(Decimal(part["amount"]), remaining)
                 same = [c for c in charges
                         if c.charge_type.category == part["category"]]
                 got = pay(same, want)
-                remaining -= got
+                remaining -= want
                 if got < want:
-                    label = CATEGORY_LABELS.get(part["category"], part["category"])
-                    short.append(f"{label} — {want - got} ₽")
+                    earmarked[part["category"]] = (
+                        earmarked.get(part["category"], Decimal("0")) + want - got)
 
             if row.category:
-                # Человек написал, на что платит, — сначала туда. Иначе
-                # «целевой взнос» закрыл бы более старый членский, и
-                # пришлось бы потом переносить руками. Сортировка
-                # устойчивая: внутри обеих групп порядок от старых к новым.
-                charges.sort(
-                    key=lambda c: c.charge_type.category != row.category
-                )
-            remaining -= pay(charges, remaining)
+                same = [c for c in charges
+                        if c.charge_type.category == row.category]
+                got = pay(same, remaining)
+                if got < remaining:
+                    earmarked[row.category] = (
+                        earmarked.get(row.category, Decimal("0")) + remaining - got)
+                remaining = Decimal("0")
+            else:
+                # Назначение не названо — как раньше: от старых к новым
+                # по всем начислениям участка, остаток в общий аванс.
+                remaining -= pay(charges, remaining)
+
             row.note = ""
-            if short:
-                row.note = ("По категориям не хватило долга, разнесено в "
-                            "остальные: " + ", ".join(short) + ". ")
+            for category, amount in earmarked.items():
+                label = CATEGORY_LABELS.get(category, category)
+                add_credit(
+                    row.plot, amount=amount, date=row.date,
+                    organization=statement.organization,
+                    transaction_row=row, category=category,
+                    notes=f"Ждёт начислений «{label}» — выписка {statement.file_name}",
+                )
+                row.note += (f"{amount} ₽ отложено авансом на {label} взнос — "
+                             f"зачтётся, когда его начислят. ")
 
             row.status = BankTransaction.STATUS_APPLIED
             if remaining > 0:
@@ -220,7 +232,10 @@ def apply_statement(statement, *, user=None):
                 )
             row.save(update_fields=["status", "note", "updated_at"])
             applied += 1
-            total += row.amount - max(remaining, Decimal("0"))
+            # Разнесено по начислениям — без того, что легло авансом:
+            # и общим, и отложенным под свою категорию.
+            total += (row.amount - max(remaining, Decimal("0"))
+                      - sum(earmarked.values(), Decimal("0")))
 
         statement.status = BankStatement.STATUS_APPLIED
         statement.applied_at = timezone.now()
