@@ -1281,6 +1281,22 @@ class Command(BaseCommand):
         # --- сводка долгов: за что именно должен ---
         from billing.services import get_debt_summary
 
+        # Два членских на одном участке с разными сроками: в разбивке —
+        # самый ранний из неоплаченных, и он уже прошёл.
+        lone_member.due_date = date(2099, 12, 31)
+        lone_member.save(update_fields=["due_date"])
+        Charge.objects.create(organization=org, period=new_period, plot=lone_plot,
+                              charge_type=membership, amount=Decimal("0.01"),
+                              due_date=date(2020, 1, 1))
+        summary = {r["plot_number"]: r for r in get_debt_summary(org, period=new_period)}
+        lone_items = {i["name"]: i for i in summary["12"]["items"]}
+        self.verify("в сводке — самый ранний срок неоплаченного и пометка просрочки",
+                    str(lone_items["Членский"]["due_date"]) == "2020-01-01"
+                    and lone_items["Членский"]["overdue"] is True,
+                    (lone_items["Членский"]["due_date"], lone_items["Членский"]["overdue"]))
+        self.verify("у оплаченного вида срок не показывается",
+                    lone_items["Целевой"]["due_date"] is None)
+        Charge.objects.filter(plot=lone_plot, amount=Decimal("0.01")).delete()
         summary = {r["plot_number"]: r for r in get_debt_summary(org, period=new_period)}
         lone_items = {i["name"]: i for i in summary["12"]["items"]}
         self.verify("в сводке долгов разбивка по видам начислений",

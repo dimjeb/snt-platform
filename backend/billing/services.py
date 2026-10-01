@@ -499,6 +499,9 @@ def get_debt_summary(organization, period=None):
             advances.setdefault(row["plot_id"], []).append(
                 {"category": row["category"], "amount": row["total"]})
 
+    from django.utils import timezone
+
+    today = timezone.localdate()
     result = []
     for plot in plots:
         owners = plot.current_owners
@@ -516,10 +519,19 @@ def get_debt_summary(organization, period=None):
                 "name": charge.charge_type.name,
                 "category": charge.charge_type.category,
                 "charged": Decimal("0"), "paid": Decimal("0"), "debt": Decimal("0"),
+                "due_date": None, "overdue": False,
             })
             item["charged"] += charge.amount
             item["paid"] += paid
             item["debt"] += charge.amount - paid
+            # Крайний срок — самый ранний среди неоплаченных начислений
+            # этого вида: именно он ближе всего к пеням. У оплаченных срок
+            # уже ничего не значит.
+            if charge.due_date and charge.amount - paid > 0:
+                if item["due_date"] is None or charge.due_date < item["due_date"]:
+                    item["due_date"] = charge.due_date
+                if charge.due_date < today:
+                    item["overdue"] = True
         debt = total_charged - total_paid
         result.append({
             "items": sorted(items.values(),
