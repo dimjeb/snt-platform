@@ -184,6 +184,14 @@ class Payment(OrgModel):
     )
     # Для онлайн-оплаты: ID транзакции в агрегаторе
     external_ref = models.CharField("Внешний ID транзакции", max_length=100, blank=True)
+    # Строка банковской выписки, из которой родился платёж. По ней видно,
+    # куда разошлись деньги одного перевода, и по ней же исправляется
+    # раскладка, если её сделали неправильно.
+    bank_transaction = models.ForeignKey(
+        "billing.BankTransaction", verbose_name="Строка выписки",
+        null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="payments",
+    )
     is_cancelled = models.BooleanField("Отменён", default=False)
     notes = models.TextField("Примечания", blank=True)
     recorded_by = models.ForeignKey(
@@ -368,6 +376,15 @@ class PlotCredit(OrgModel):
             "Нужен, чтобы повторный расчёт не выписал второй такой же "
             "возврат и при этом не затёр переплату по выписке за ту же дату."
         ),
+    )
+    # На что эти деньги. Пусто — аванс общий и гасит любые начисления.
+    # «target» — человек платил целевой, а целевого начисления ещё не
+    # было: такие деньги ждут именно целевой и в членский не уходят.
+    category = models.CharField(
+        "Назначение аванса", max_length=20, blank=True,
+        choices=[("membership", "Членский взнос"),
+                 ("target", "Целевой взнос"),
+                 ("electricity", "Электроэнергия")],
     )
     period = models.ForeignKey(
         BillingPeriod, on_delete=models.SET_NULL, null=True, blank=True,
