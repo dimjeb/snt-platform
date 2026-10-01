@@ -11,7 +11,7 @@
     <q-tab-panels v-model="tab" animated>
       <!-- Счётчики -->
       <q-tab-panel name="meters" class="q-pa-none">
-        <q-btn outline color="orange-8" icon="add" label="Добавить счётчик" class="q-mb-md" @click="meterDialog = true" />
+        <q-btn outline color="orange-8" icon="add" label="Добавить счётчик" class="q-mb-md" @click="openNewMeter" />
         <q-list separator bordered rounded>
           <q-item v-for="m in meters" :key="m.id">
             <q-item-section avatar>
@@ -20,6 +20,9 @@
             <q-item-section>
               <q-item-label>{{ m.is_main ? '[ГЛАВНЫЙ] ' : '' }}{{ m.serial_number }}</q-item-label>
               <q-item-label caption>Участок: {{ m.plot_number || '—' }}</q-item-label>
+            </q-item-section>
+            <q-item-section side>
+              <q-btn flat dense no-caps color="orange-8" icon="edit_note" label="Показание и долг" @click="openOpening(m)" />
             </q-item-section>
           </q-item>
           <q-item v-if="!meters.length"><q-item-section class="text-center text-grey-6">Нет счётчиков</q-item-section></q-item>
@@ -66,9 +69,12 @@
     <!-- Диалог: счётчик -->
     <q-dialog v-model="meterDialog" persistent>
       <q-card style="min-width:300px">
-        <q-card-section class="text-h6">Новый счётчик</q-card-section>
+        <q-card-section class="text-h6">
+          {{ openingFor ? `Счётчик ${openingFor.serial_number}: показание и долг` : 'Новый счётчик' }}
+        </q-card-section>
         <q-card-section>
           <q-form class="q-gutter-sm">
+            <template v-if="!openingFor">
             <q-input v-model="meterForm.serial_number" label="Серийный номер *" outlined dense />
             <q-select
               v-model="meterForm.plot"
@@ -79,6 +85,20 @@
               clearable
             />
             <q-toggle v-model="meterForm.is_main" label="Главный счётчик (общий)" />
+            </template>
+            <div class="text-subtitle2 q-mt-md">Что на счётчике сейчас</div>
+            <div class="text-caption text-grey-7">
+              От этого показания пойдёт первый расчёт: до этой даты свет не начисляется.
+            </div>
+            <q-input v-model="meterForm.initial_date" label="Дата показания" outlined dense type="date" />
+            <q-input v-model="meterForm.initial_reading" label="Показание, кВт·ч" outlined dense type="number" step="0.001" min="0"
+                     hint="Всё число со счётчика целиком" />
+            <q-input v-model="meterForm.initial_reading_night" label="Ночное показание (двухтарифный)" outlined dense type="number" step="0.001" min="0" />
+            <template v-if="!debtTarget.isMain">
+              <q-input v-model="meterForm.opening_debt" label="Долг за свет на эту дату, ₽" outlined dense type="number" step="0.01" min="0"
+                       :disable="!debtTarget.plot"
+                       :hint="debtTarget.plot ? 'Ляжет начислением «Электроэнергия» на участок' : 'Сначала выберите участок'" />
+            </template>
           </q-form>
         </q-card-section>
         <q-card-actions align="right">
@@ -109,7 +129,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useQuasar } from 'quasar'
 import api from 'src/api/client'
 
@@ -124,7 +144,29 @@ const tariffDialog = ref(false)
 const saving = ref(false)
 const calculating = ref(false)
 const readingMonth = ref(new Date().toISOString().slice(0, 7))
-const meterForm = ref({ serial_number: '', plot: null, is_main: false })
+const emptyMeterForm = () => ({
+  serial_number: '', plot: null, is_main: false,
+  initial_date: new Date().toISOString().slice(0, 10),
+  initial_reading: '', initial_reading_night: '', opening_debt: '',
+})
+const meterForm = ref(emptyMeterForm())
+// Счётчик, которому вносим показание и долг; null — заводим новый.
+const openingFor = ref(null)
+const debtTarget = computed(() => (openingFor.value
+  ? { isMain: openingFor.value.is_main, plot: openingFor.value.plot }
+  : { isMain: meterForm.value.is_main, plot: meterForm.value.plot }))
+
+function openNewMeter() {
+  openingFor.value = null
+  meterForm.value = emptyMeterForm()
+  meterDialog.value = true
+}
+
+function openOpening(m) {
+  openingFor.value = m
+  meterForm.value = emptyMeterForm()
+  meterDialog.value = true
+}
 const tariffForm = ref({ valid_from: '', price_per_kwh: '', price_per_kwh_night: '' })
 
 async function load() {
@@ -194,11 +236,36 @@ async function calculate() {
 async function saveMeter() {
   saving.value = true
   try {
-    await api.post('/electricity/meters/', meterForm.value)
+    // Пустые поля не шлём: '' для числа сервер считает ошибкой.
+    const f = meterForm.value
+    const body = openingFor.value
+      ? {}
+      : { serial_number: f.serial_number, plot: f.plot, is_main: f.is_main }
+    for (const k of ['initial_date', 'initial_reading', 'initial_reading_night']) {
+      if (f[k] !== '' && f[k] !== null) body[k] = f[k]
+    }
+    if (!debtTarget.value.isMain && debtTarget.value.plot && Number(f.opening_debt) > 0) {
+      body.opening_debt = f.opening_debt
+    }
+    const debtNote = body.opening_debt ? `, долг ${body.opening_debt} ₽ начислен` : ''
+    if (openingFor.value) {
+      await api.post(`/electricity/meters/${openingFor.value.id}/opening/`, body)
+    } else {
+      await api.post('/electricity/meters/', body)
+    }
+    const done = openingFor.value
+      ? `Счётчик ${openingFor.value.serial_number}: записано${debtNote}`
+      : `Счётчик добавлен${debtNote}`
     meterDialog.value = false
+    meterForm.value = emptyMeterForm()
+    openingFor.value = null
     await load()
-    $q.notify({ type: 'positive', message: 'Счётчик добавлен' })
-  } catch { $q.notify({ type: 'negative', message: 'Ошибка' }) }
+    $q.notify({ type: 'positive', message: done })
+  } catch (e) {
+    const d = e.response?.data
+    const msg = d && typeof d === 'object' ? Object.values(d).flat().join(' ') : ''
+    $q.notify({ type: 'negative', message: msg || 'Ошибка' })
+  }
   finally { saving.value = false }
 }
 

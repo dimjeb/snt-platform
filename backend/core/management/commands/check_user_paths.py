@@ -410,6 +410,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("ПРИЁМ ПЛАТЕЖА КАЗНАЧЕЕМ"))
         self._check_receive_payment(c, CH, ME)
 
+        # ---------------- Новый счётчик: показание и долг ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("НОВЫЙ СЧЁТЧИК: ПОКАЗАНИЕ И ДОЛГ"))
+        self._check_meter_opening(c, CH, ME)
+
         # ---------------- Электроэнергия ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("ЭЛЕКТРОЭНЕРГИЯ"))
         self._check_electricity_gaps()
@@ -1548,6 +1552,137 @@ class Command(BaseCommand):
         r = receive({"amount": "100", "for": "auto"}, headers=member_headers)
         self.verify("рядовой член принять платёж не может", r.status_code == 403,
                     f"HTTP {r.status_code}")
+
+    def _check_meter_opening(self, c, chairman_headers, member_headers):
+        """
+        Счётчик заводят на участке, где свет давно горит: сразу вносится
+        показание на сегодня (от него первый расчёт) и долг за прошлое.
+
+        Долг ложится в годовой период: месячное начисление за свет расчёт
+        перезаписывает, и долг там был бы затёрт.
+        """
+        from decimal import Decimal
+
+        from billing.credits import add_credit
+        from billing.models import Charge, ChargeType
+        from electricity.models import Meter, MeterReading
+        from members.models import Plot
+
+        org = self._fixture_org
+        url = "/api/electricity/meters/"
+
+        def create(body, headers=chairman_headers):
+            return c.post(url, data=body, content_type="application/json", **headers)
+
+        plot = Plot.objects.create(organization=org, number="СЧ-НОВ-1")
+        r = create({"serial_number": "N-1", "plot": plot.pk,
+                    "initial_date": "2033-05-10", "initial_reading": "14350",
+                    "opening_debt": "1250.50"})
+        meter = Meter.objects.filter(organization=org, serial_number="N-1").first()
+        reading = MeterReading.objects.filter(meter=meter).first() if meter else None
+        self.verify("счётчик создан вместе с начальным показанием",
+                    r.status_code == 201 and reading is not None
+                    and reading.value == Decimal("14350") and not reading.is_estimated
+                    and str(reading.date) == "2033-05-10",
+                    f"HTTP {r.status_code}, {self._json(r)}")
+        debt = Charge.objects.filter(plot=plot).first()
+        self.verify("долг лёг начислением «Электроэнергия» в годовой период",
+                    debt is not None and debt.amount == Decimal("1250.50")
+                    and debt.charge_type.category == ChargeType.TYPE_ELECTRICITY
+                    and debt.period.year == 2033 and debt.period.month is None,
+                    debt and (debt.amount, debt.period, debt.charge_type.category))
+        self.verify("в описании долга — дата и показание",
+                    debt is not None and "10.05.2033" in debt.description
+                    and "14350" in debt.description,
+                    debt and debt.description)
+        self.verify("второй вид «Электроэнергия» не заведён (расчёт ищет единственный)",
+                    ChargeType.objects.filter(organization=org,
+                                              category=ChargeType.TYPE_ELECTRICITY).count() == 1)
+
+        plot2 = Plot.objects.create(organization=org, number="СЧ-НОВ-2")
+        add_credit(plot2, amount=Decimal("300.00"), date=plot2.created_at.date(),
+                   organization=org, category="electricity", notes="проверка")
+        r = create({"serial_number": "N-2", "plot": plot2.pk, "opening_debt": "1000"})
+        debt2 = Charge.objects.filter(plot=plot2).first()
+        self.verify("аванс за свет сразу гасит внесённый долг",
+                    r.status_code == 201 and debt2 is not None
+                    and debt2.paid_amount == Decimal("300.00"),
+                    debt2 and debt2.paid_amount)
+
+        plot3 = Plot.objects.create(organization=org, number="СЧ-НОВ-3")
+        r = create({"serial_number": "N-3", "plot": plot3.pk})
+        self.verify("без начальных данных — просто счётчик, как раньше",
+                    r.status_code == 201 and not Charge.objects.filter(plot=plot3).exists()
+                    and not MeterReading.objects.filter(meter__plot=plot3).exists(),
+                    f"HTTP {r.status_code}")
+        m3 = Meter.objects.get(organization=org, serial_number="N-3")
+        r = c.patch(f"{url}{m3.pk}/", data={"opening_debt": "500", "notes": "x"},
+                    content_type="application/json", **chairman_headers)
+        self.verify("при правке счётчика долг повторно не вносится",
+                    r.status_code == 200 and not Charge.objects.filter(plot=plot3).exists(),
+                    f"HTTP {r.status_code}")
+
+        before = Meter.objects.count()
+        bad = [
+            ("долг у главного ввода — отказ",
+             {"serial_number": "N-X", "is_main": True, "opening_debt": "100"}),
+            ("долг без участка — отказ",
+             {"serial_number": "N-X", "opening_debt": "100"}),
+            ("ночное показание без дневного — отказ",
+             {"serial_number": "N-X", "plot": plot3.pk, "initial_reading_night": "5"}),
+            ("отрицательный долг — отказ",
+             {"serial_number": "N-X", "plot": plot3.pk, "opening_debt": "-1"}),
+            ("участок чужого товарищества — отказ",
+             {"serial_number": "N-X",
+              "plot": Plot.objects.exclude(organization=org).first().pk}),
+        ]
+        for label, body in bad:
+            r = create(body)
+            self.verify(label, r.status_code == 400, f"HTTP {r.status_code}")
+        r = create({"serial_number": "N-X", "plot": plot3.pk, "opening_debt": "100"},
+                   headers=member_headers)
+        self.verify("рядовой член счётчик с долгом завести не может",
+                    r.status_code == 403, f"HTTP {r.status_code}")
+        self.verify("отказы ничего не создали", Meter.objects.count() == before)
+
+        # Счётчик заведён раньше без показания и долга — вносим отдельно.
+        op = f"{url}{m3.pk}/opening/"
+
+        def opening(body, headers=chairman_headers, path=op):
+            return c.post(path, data=body, content_type="application/json", **headers)
+
+        r = opening({"initial_date": "2033-06-01", "initial_reading": "500.5",
+                     "opening_debt": "200"})
+        self.verify("у заведённого счётчика: показание и долг вносятся кнопкой",
+                    r.status_code == 201
+                    and MeterReading.objects.filter(meter=m3, date="2033-06-01",
+                                                    value=Decimal("500.5")).exists()
+                    and Charge.objects.filter(plot=plot3, amount=Decimal("200")).count() == 1,
+                    f"HTTP {r.status_code}, {self._json(r)}")
+        r = opening({"initial_date": "2033-06-01", "initial_reading": "600"})
+        self.verify("второе показание на ту же дату — понятный отказ, не пятисотка",
+                    r.status_code == 400 and "initial_date" in (self._json(r) or {}),
+                    f"HTTP {r.status_code}")
+        r = opening({})
+        self.verify("пустой запрос — отказ", r.status_code == 400, f"HTTP {r.status_code}")
+        main = Meter.objects.create(organization=org, is_main=True, serial_number="ГЛ-НОВ")
+        r = opening({"opening_debt": "100"}, path=f"{url}{main.pk}/opening/")
+        self.verify("долг главному вводу — отказ", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+        r = opening({"opening_debt": "100"}, headers=member_headers)
+        self.verify("рядовой член долг не вносит", r.status_code == 403,
+                    f"HTTP {r.status_code}")
+        self.verify("отказы долгов не добавили",
+                    Charge.objects.filter(plot=plot3).count() == 1)
+
+        foreign_plot = Plot.objects.exclude(organization=org).first()
+        foreign_meter = Meter.objects.create(organization=foreign_plot.organization,
+                                             plot=foreign_plot, serial_number="ЧУЖОЙ")
+        r = c.post("/api/electricity/readings/",
+                   data={"meter": foreign_meter.pk, "date": "2033-05-11", "value": "1"},
+                   content_type="application/json", **member_headers)
+        self.verify("показание в счётчик чужого товарищества — отказ",
+                    r.status_code == 400, f"HTTP {r.status_code}")
 
     def _check_electricity_gaps(self):
         """

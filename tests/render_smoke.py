@@ -378,6 +378,38 @@ with sync_playwright() as pw:
            "Разделено: Членский взнос 600,00 ₽ + Целевой взнос 400,00 ₽" in split_text,
            split_text[split_text.find("Разделено"):][:120] if "Разделено" in split_text else "строки нет")
 
+    # 9а. Новый счётчик на участке, где свет давно горит: сразу
+    #     показание на сегодня и долг за прошлое.
+    page.goto(f"{BASE}/electricity", wait_until="networkidle")
+    page.wait_for_timeout(1500)
+    page.get_by_role("button", name="Добавить счётчик").click()
+    page.wait_for_timeout(600)
+    page.get_by_label("Серийный номер *").fill("BR-START-1")
+    page.get_by_label("Участок", exact=True).click()
+    page.wait_for_timeout(400)
+    page.get_by_role("option", name="№2", exact=True).click()
+    page.wait_for_timeout(300)
+    page.get_by_label("Показание, кВт·ч").fill("14350")
+    page.get_by_label("Долг за свет на эту дату, ₽").fill("777")
+    page.get_by_role("button", name="Сохранить").click()
+    page.wait_for_timeout(2000)
+    meter_text = body_text(page)
+    verify("счётчик добавлен, долг начислен — сказано в уведомлении",
+           "долг 777 ₽ начислен" in meter_text and "BR-START-1" in meter_text,
+           meter_text[meter_text.find("Счётчик"):][:120] if "Счётчик" in meter_text else "")
+
+    # У уже заведённого счётчика — та же форма кнопкой «Показание и долг».
+    page.locator(".q-item", has_text="BR-START-1").get_by_role(
+        "button", name="Показание и долг").click()
+    page.wait_for_timeout(600)
+    page.get_by_label("Долг за свет на эту дату, ₽").fill("50")
+    page.get_by_role("button", name="Сохранить").click()
+    page.wait_for_timeout(2000)
+    meter_text = body_text(page)
+    verify("долг внесён кнопкой у существующего счётчика",
+           "BR-START-1: записано, долг 50 ₽ начислен" in meter_text,
+           meter_text[meter_text.find("BR-START"):][:120] if "BR-START" in meter_text else "")
+
     # 10. Оплата с телефона: камерой свой экран не отсканировать, поэтому
     #     QR сохраняется в галерею, а реквизиты копируются по одному.
     phone = browser.new_context(
