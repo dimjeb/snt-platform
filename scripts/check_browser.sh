@@ -187,6 +187,10 @@ cat > "$WORK/Caddyfile" <<EOF
     handle /api/* {
         reverse_proxy 127.0.0.1:$APIPORT
     }
+    handle /media/* {
+        root * $ROOT/backend
+        file_server
+    }
     handle /assets/* {
         root * $ROOT/frontend/dist/spa
         header Cache-Control "public, max-age=31536000, immutable"

@@ -410,6 +410,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("ПРИЁМ ПЛАТЕЖА КАЗНАЧЕЕМ"))
         self._check_receive_payment(c, CH, ME)
 
+        # ---------------- Логотип товарищества ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("ЛОГОТИП ТОВАРИЩЕСТВА"))
+        self._check_org_logo(c, CH, ME)
+
         # ---------------- Новый счётчик: показание и долг ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("НОВЫЙ СЧЁТЧИК: ПОКАЗАНИЕ И ДОЛГ"))
         self._check_meter_opening(c, CH, ME)
@@ -1551,6 +1555,89 @@ class Command(BaseCommand):
         self.verify("нулевая сумма — отказ", r.status_code == 400, f"HTTP {r.status_code}")
         r = receive({"amount": "100", "for": "auto"}, headers=member_headers)
         self.verify("рядовой член принять платёж не может", r.status_code == 403,
+                    f"HTTP {r.status_code}")
+
+    def _check_org_logo(self, c, chairman_headers, member_headers):
+        """
+        Председатель загружает логотип, все люди СНТ видят его в шапке.
+
+        Формат проверяется по содержимому: SVG (в нём бывает скрипт) и
+        подделка с расширением .png не проходят — /media/ публичная.
+        """
+        import io
+
+        from django.core.files.storage import default_storage
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from PIL import Image
+
+        org = self._fixture_org
+        url = "/api/organizations/current/logo/"
+
+        def png(size=(64, 32), color=(30, 140, 60)):
+            buf = io.BytesIO()
+            Image.new("RGB", size, color).save(buf, "PNG")
+            return buf.getvalue()
+
+        def upload(name, content, headers=chairman_headers, ctype="image/png"):
+            return c.post(url, data={"logo": SimpleUploadedFile(name, content, ctype)},
+                          **headers)
+
+        r = upload("logo.png", png())
+        data = self._json(r) or {}
+        first = data.get("logo") or ""
+        org.refresh_from_db()
+        self.verify("председатель загрузил логотип",
+                    r.status_code == 201 and first.startswith("/media/logos/org")
+                    and bool(org.logo) and default_storage.exists(org.logo.name),
+                    f"HTTP {r.status_code}, {data}")
+        r = c.get("/api/organizations/current/", **member_headers)
+        self.verify("рядовой член видит имя и логотип своего СНТ (для шапки)",
+                    r.status_code == 200 and (self._json(r) or {}).get("logo") == first
+                    and (self._json(r) or {}).get("name") == org.name,
+                    f"HTTP {r.status_code}, {self._json(r)}")
+        old_name = org.logo.name
+        r = upload("logo2.jpg", png(color=(200, 0, 0)))
+        org.refresh_from_db()
+        self.verify("новая загрузка — новое имя файла, старый файл удалён",
+                    r.status_code == 201 and org.logo.name != old_name
+                    and not default_storage.exists(old_name),
+                    f"HTTP {r.status_code}, {org.logo.name}")
+
+        r = upload("logo.png", png(), headers=member_headers)
+        self.verify("рядовой член логотип не меняет", r.status_code == 403,
+                    f"HTTP {r.status_code}")
+        r = upload("logo.png", b"not an image at all")
+        self.verify("не картинка с расширением .png — отказ", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+        svg = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+        r = upload("logo.svg", svg, ctype="image/svg+xml")
+        self.verify("SVG — отказ (в нём бывает скрипт)", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+        buf = io.BytesIO()
+        Image.new("RGB", (8, 8)).save(buf, "GIF")
+        r = upload("logo.gif", buf.getvalue(), ctype="image/gif")
+        self.verify("GIF — отказ, только PNG/JPG/WEBP", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+        r = upload("big.png", png() + b"\0" * (2 * 1024 * 1024 + 1))
+        self.verify("файл больше 2 МБ — отказ", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+        org.refresh_from_db()
+        self.verify("отказы логотип не тронули",
+                    default_storage.exists(org.logo.name), org.logo.name)
+
+        r = c.patch(f"/api/organizations/{org.pk}/",
+                    data={"logo": None, "phone": org.phone},
+                    content_type="application/json", **chairman_headers)
+        org.refresh_from_db()
+        self.verify("обычная правка организации логотип не трогает (только через проверку)",
+                    r.status_code == 200 and bool(org.logo), f"HTTP {r.status_code}")
+
+        last = org.logo.name
+        r = c.delete(url, **chairman_headers)
+        org.refresh_from_db()
+        self.verify("логотип убирается вместе с файлом",
+                    r.status_code == 204 and not org.logo
+                    and not default_storage.exists(last),
                     f"HTTP {r.status_code}")
 
     def _check_meter_opening(self, c, chairman_headers, member_headers):

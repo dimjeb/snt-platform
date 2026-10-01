@@ -11,6 +11,8 @@ export const useAuthStore = defineStore('auth', {
     // Для суперадмина: выбранная организация
     selectedOrgId: localStorage.getItem('selectedOrgId') || null,
     selectedOrgName: localStorage.getItem('selectedOrgName') || null,
+    // Имя и логотип текущего СНТ — для шапки (organizations/current/)
+    orgInfo: null,
   }),
 
   getters: {
@@ -23,6 +25,7 @@ export const useAuthStore = defineStore('auth', {
     // положен не по роли, а по связи учётки с членом СНТ.
     hasOwnCabinet: (s) => !!s.user?.member_id,
     isSuperAdmin: (s) => s.user?.role === 'superadmin',
+    canEditOrg: (s) => ['chairman', 'superadmin'].includes(s.user?.role),
     // Есть ли активный контекст организации
     hasOrg: (s) => !!(s.user?.organization || s.selectedOrgId),
   },
@@ -58,6 +61,10 @@ export const useAuthStore = defineStore('auth', {
       })
       this.user = data
       localStorage.setItem('user', JSON.stringify(data))
+    },
+
+    setOrgInfo(info) {
+      this.orgInfo = info
     },
 
     setOrg(id, name) {
