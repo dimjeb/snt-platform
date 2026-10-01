@@ -6,7 +6,7 @@
       <q-card-section>
         <div class="text-subtitle1 text-weight-medium">Логотип</div>
         <div class="text-caption text-grey-7">
-          Показывается в шапке сайта у всех членов товарищества.
+          Показывается в меню слева, над именем пользователя, у всех членов товарищества.
           PNG, JPG или WEBP, до 2 МБ. Лучше всего — квадратный или
           вытянутый по ширине, на белом или прозрачном фоне.
         </div>
@@ -93,7 +93,7 @@ async function upload() {
 function remove() {
   $q.dialog({
     title: 'Убрать логотип?',
-    message: 'В шапке снова будет «СНТ Платформа» с иконкой.',
+    message: 'Из меню логотип пропадёт, пока не загрузите новый.',
     cancel: true,
   }).onOk(async () => {
     removing.value = true

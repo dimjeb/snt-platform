@@ -4,13 +4,9 @@
       <q-toolbar class="snt-toolbar">
         <q-btn flat dense round icon="menu" @click="drawer = !drawer" class="q-mr-sm" />
 
-        <img v-if="auth.orgInfo?.logo" :src="auth.orgInfo.logo" :alt="auth.orgInfo.name"
-             class="snt-org-logo q-mr-sm" />
         <div class="snt-logo row items-center no-wrap q-mr-md gt-xs">
-          <q-icon v-if="!auth.orgInfo?.logo" name="park" size="22px" class="q-mr-xs" style="color:rgba(255,255,255,0.85)" />
-          <span class="text-weight-bold" style="font-size:15px;letter-spacing:0.02em">
-            {{ auth.orgInfo?.name || 'СНТ Платформа' }}
-          </span>
+          <q-icon name="park" size="22px" class="q-mr-xs" style="color:rgba(255,255,255,0.85)" />
+          <span class="text-weight-bold" style="font-size:15px;letter-spacing:0.02em">СНТ Платформа</span>
         </div>
 
         <div class="snt-page-title lt-sm">{{ pageTitle }}</div>
@@ -60,6 +56,11 @@
       bordered
     >
       <q-scroll-area class="fit">
+        <!-- Логотип товарищества — во всю ширину колонки, без подписи -->
+        <div v-if="auth.orgInfo?.logo" class="snt-drawer-logo">
+          <img :src="auth.orgInfo.logo" :alt="auth.orgInfo.name" class="snt-org-logo" />
+        </div>
+
         <!-- Профиль в шапке ящика -->
         <div class="snt-drawer-profile">
           <div class="snt-avatar">
