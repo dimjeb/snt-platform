@@ -1,1 +1,0 @@
-import{V as e,W as t}from"./index-dBdlqJZ-.js";var n=t(({app:t})=>{t.use(e())});export{n as default};

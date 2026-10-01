@@ -217,7 +217,12 @@
         <q-card style="min-width: 320px; max-width: 420px">
           <q-card-section class="bg-blue-8 text-white">
             <div class="text-h6">Оплата по QR</div>
-            <div class="text-caption">
+            <!-- С телефона камерой свой же экран не отсканировать: там
+                 путь другой — сохранить картинку и открыть её в банке. -->
+            <div class="text-caption" v-if="isPhone">
+              Сохраните QR и откройте его в приложении банка из галереи
+            </div>
+            <div class="text-caption" v-else>
               Откройте приложение своего банка и наведите камеру
             </div>
           </q-card-section>
@@ -239,6 +244,30 @@
               Банк может удержать свою комиссию за перевод — она не
               относится к товариществу
             </div>
+            <q-btn
+              class="q-mt-sm"
+              :color="isPhone ? 'blue-8' : 'grey-8'"
+              :outline="!isPhone" unelevated
+              icon="download" label="Сохранить QR"
+              @click="saveQr"
+            />
+          </q-card-section>
+
+          <q-card-section v-if="qrUrl && isPhone" class="q-pt-sm">
+            <div class="text-body2 text-weight-medium q-mb-xs">Как оплатить с этого телефона</div>
+            <ol class="text-body2 q-pl-md q-my-none qr-steps">
+              <li>Нажмите <b>«Сохранить QR»</b> → <b>«Сохранить изображение»</b>.</li>
+              <li>Откройте приложение своего банка и найдите оплату по QR-коду —
+                там же, где камера для сканирования.</li>
+              <li>В окне камеры нажмите значок <b>картинки</b> («Из галереи», «Из файла»)
+                и выберите сохранённый QR.</li>
+              <li>Банк сам заполнит получателя, сумму и назначение — проверьте и подтвердите.</li>
+            </ol>
+            <div class="text-caption text-grey-7 q-mt-xs">
+              Так умеют приложения Сбербанка, ВТБ, Т-Банка, Альфа-Банка и большинства
+              других. Если в вашем банке такого значка нет — переведите по реквизитам ниже,
+              у каждого есть кнопка «Скопировать».
+            </div>
           </q-card-section>
 
           <q-card-section v-if="qrError" class="text-negative text-body2">
@@ -247,46 +276,25 @@
 
           <q-card-section v-if="qrRequisites">
             <div class="text-caption text-grey-7 q-mb-xs">
-              Если сканер не сработал — реквизиты для перевода вручную:
+              {{ isPhone ? 'Или переведите по реквизитам — каждое поле копируется одним нажатием:'
+                : 'Если сканер не сработал — реквизиты для перевода вручную:' }}
             </div>
             <q-list dense class="text-caption">
-              <q-item dense class="q-px-none">
+              <q-item v-for="row in requisiteRows" :key="row.label" dense class="q-px-none">
                 <q-item-section>
-                  <q-item-label overline>Получатель</q-item-label>
-                  <q-item-label>{{ qrRequisites.name }}</q-item-label>
+                  <q-item-label overline>{{ row.label }}</q-item-label>
+                  <q-item-label>{{ row.value }}</q-item-label>
                 </q-item-section>
-              </q-item>
-              <q-item dense class="q-px-none">
-                <q-item-section>
-                  <q-item-label overline>Счёт</q-item-label>
-                  <q-item-label>{{ qrRequisites.account }}</q-item-label>
-                </q-item-section>
-              </q-item>
-              <q-item dense class="q-px-none">
-                <q-item-section>
-                  <q-item-label overline>Банк</q-item-label>
-                  <q-item-label>{{ qrRequisites.bank }}, БИК {{ qrRequisites.bic }}</q-item-label>
-                </q-item-section>
-              </q-item>
-              <q-item dense class="q-px-none">
-                <q-item-section>
-                  <q-item-label overline>Корр. счёт</q-item-label>
-                  <q-item-label>{{ qrRequisites.corr_account }}</q-item-label>
-                </q-item-section>
-              </q-item>
-              <q-item dense class="q-px-none">
-                <q-item-section>
-                  <q-item-label overline>ИНН / КПП</q-item-label>
-                  <q-item-label>{{ qrRequisites.inn }} / {{ qrRequisites.kpp }}</q-item-label>
-                </q-item-section>
-              </q-item>
-              <q-item dense class="q-px-none">
-                <q-item-section>
-                  <q-item-label overline>Назначение платежа</q-item-label>
-                  <q-item-label>{{ qrPurpose }}</q-item-label>
+                <q-item-section side>
+                  <q-btn flat dense round size="sm" icon="content_copy"
+                         :aria-label="`Скопировать: ${row.label}`"
+                         @click="copyValue(row.copy ?? row.value, row.label)" />
                 </q-item-section>
               </q-item>
             </q-list>
+            <q-btn flat dense size="sm" color="blue-8" icon="content_copy"
+                   label="Скопировать все реквизиты одним текстом"
+                   class="q-mt-xs" @click="copyAll" />
             <!-- Без номера участка казначей не опознает платёж в выписке -->
             <div class="text-caption text-orange-9 q-mt-sm">
               Обязательно сохраните назначение платежа с номером участка —
@@ -381,7 +389,7 @@
 <script setup>
 import { computed, ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { useQuasar } from 'quasar'
+import { copyToClipboard, useQuasar } from 'quasar'
 import { useAuthStore } from 'stores/auth'
 import api from 'src/api/client'
 
@@ -473,6 +481,67 @@ function fillAll() {
   payInputs.value = next
 }
 
+// Телефон определяем по Quasar, а не по ширине экрана: планшет в
+// альбомной ориентации широкий, но камерой свой экран тоже не снимет.
+const isPhone = computed(() => !!($q.platform.is.mobile))
+let qrBlob = null
+
+const requisiteRows = computed(() => {
+  const r = qrRequisites.value
+  if (!r) return []
+  return [
+    { label: 'Получатель', value: r.name },
+    { label: 'Счёт', value: r.account },
+    { label: 'БИК', value: r.bic },
+    { label: 'Банк', value: r.bank },
+    { label: 'Корр. счёт', value: r.corr_account },
+    { label: 'ИНН', value: r.inn },
+    { label: 'КПП', value: r.kpp },
+    { label: 'Сумма', value: `${formatMoney(qrAmount.value)} ₽`,
+      // В поле суммы банка — число без пробелов и знака рубля.
+      copy: String(Number(qrAmount.value).toFixed(2)) },
+    { label: 'Назначение платежа', value: qrPurpose.value },
+  ].filter((row) => row.value)
+})
+
+async function copyValue(value, label) {
+  try {
+    await copyToClipboard(String(value))
+    $q.notify({ type: 'positive', message: `${label}: скопировано`, timeout: 1200 })
+  } catch {
+    $q.notify({ type: 'warning', message: 'Не удалось скопировать — выделите текст вручную' })
+  }
+}
+
+function copyAll() {
+  const text = requisiteRows.value
+    .map((row) => `${row.label}: ${row.copy ?? row.value}`)
+    .join('\n')
+  copyValue(text, 'Реквизиты')
+}
+
+// На телефоне — системное «Поделиться»: оттуда «Сохранить изображение»
+// кладёт QR в галерею, откуда его берёт приложение банка. Где «Поделиться»
+// с файлами нет (компьютер, старые браузеры) — обычное скачивание.
+async function saveQr() {
+  if (!qrBlob) return
+  const file = new File([qrBlob], 'oplata-qr.png', { type: 'image/png' })
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: 'QR для оплаты' })
+      return
+    } catch (e) {
+      if (e && e.name === 'AbortError') return   // человек закрыл окно сам
+    }
+  }
+  const link = document.createElement('a')
+  link.href = qrUrl.value
+  link.download = 'oplata-qr.png'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
 async function openQr() {
   qrError.value = ''
   qrUrl.value = ''
@@ -491,6 +560,7 @@ async function openQr() {
       params: { amount: payTotal.value },
       responseType: 'blob',
     })
+    qrBlob = img.data
     qrUrl.value = URL.createObjectURL(img.data)
   } catch (e) {
     qrError.value =
