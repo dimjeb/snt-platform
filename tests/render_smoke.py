@@ -304,6 +304,26 @@ with sync_playwright() as pw:
                body_text(page).count("Перенос между начислениями") == 2,
                f"строк {body_text(page).count('Перенос между начислениями')}")
 
+    # 9. Разделение одного платежа выписки по категориям с суммами.
+    page.goto(f"{BASE}/statements", wait_until="networkidle")
+    page.wait_for_timeout(1500)
+    page.get_by_text("split-check.xlsx").first.click()
+    page.wait_for_timeout(1500)
+    page.get_by_role("button", name="Разделить по категориям").first.click()
+    page.wait_for_timeout(800)
+    amounts = page.get_by_label("Сумма", exact=True)
+    amounts.nth(0).fill("600")
+    amounts.nth(1).fill("400")
+    page.wait_for_timeout(300)
+    verify("подсказка показывает, что разделено полностью",
+           "Разделено полностью" in body_text(page), "")
+    page.get_by_role("button", name="Сохранить").click()
+    page.wait_for_timeout(1500)
+    split_text = body_text(page)
+    verify("разделение сохранилось и видно в строке выписки",
+           "Разделено: Членский взнос 600,00 ₽ + Целевой взнос 400,00 ₽" in split_text,
+           split_text[split_text.find("Разделено"):][:120] if "Разделено" in split_text else "строки нет")
+
     browser.close()
 
 print()

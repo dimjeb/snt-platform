@@ -300,6 +300,14 @@ class BankTransaction(OrgModel):
                  ("target", "Целевой взнос"),
                  ("electricity", "Электроэнергия")],
     )
+    # Разнесение одного перевода по нескольким категориям с суммами:
+    # [{"category": "membership", "amount": "6000.00"},
+    #  {"category": "target", "amount": "4000.00"}].
+    # Сумма частей не больше суммы строки; остаток разносится как обычно
+    # (сначала в category, потом в остальные начисления, потом аванс).
+    # Пусто — разделения нет.
+    allocation = models.JSONField("Разнесение по категориям", default=list,
+                                  blank=True)
     status = models.CharField("Статус", max_length=10, choices=STATUS_CHOICES,
                               default=STATUS_NEW)
     note = models.CharField("Комментарий", max_length=255, blank=True)

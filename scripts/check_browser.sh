@@ -153,6 +153,17 @@ Payment.objects.create(organization=org, charge=paid_target, date=date(2026, 9, 
 Charge.objects.create(organization=org, period=period, plot=plot2,
                       charge_type=overdue_type, amount="100.00",
                       description="членский участка 2")
+
+# Выписка с одной непроведённой строкой — под разделение по категориям.
+from billing.models import BankStatement, BankTransaction
+
+split_statement = BankStatement.objects.create(organization=org,
+                                               file_name="split-check.xlsx")
+BankTransaction.objects.create(
+    organization=org, statement=split_statement, doc_number="77",
+    date=date(2026, 9, 25), amount="1000.00", purpose="взносы уч 1",
+    plot=p, member=m, match_kind=BankTransaction.MATCH_PLOT,
+)
 u = User(username=os.environ["SMOKE_LOGIN"], organization=org, member=m,
          role=User.ROLE_MEMBER, is_active=True, must_change_password=True)
 u.set_password(os.environ["SMOKE_PASSWORD"])
