@@ -831,6 +831,59 @@ class Command(BaseCommand):
                     Charge.objects.filter(pk=full.pk).exists()
                     and Charge.objects.filter(pk=extra.pk).exists())
 
+        # --- смена срока у уже созданных начислений ---
+        fx_org = self._fixture_org
+        fx_period = BillingPeriod.objects.create(organization=fx_org, year=2031, month=1)
+        fx_type = ChargeType.objects.create(organization=fx_org,
+                                            category=ChargeType.TYPE_MEMBERSHIP,
+                                            name="Членский для срока")
+        fx_plots = list(Plot.objects.filter(organization=fx_org).order_by("pk")[:2])
+        fx_charges = [
+            Charge.objects.create(organization=fx_org, period=fx_period, plot=pl,
+                                  charge_type=fx_type, amount=Decimal("100.00"),
+                                  due_date=date(2026, 9, 29))
+            for pl in fx_plots
+        ]
+        fx_pen_type, _ = ChargeType.objects.get_or_create(
+            organization=fx_org, category=ChargeType.TYPE_PENALTY,
+            defaults={"name": "Пени"})
+        Charge.objects.create(organization=fx_org, period=fx_period, plot=fx_plots[0],
+                              charge_type=fx_pen_type, amount=Decimal("20.00"),
+                              penalty_for=fx_charges[0])
+        url = "/api/billing/charges/set_due_date/"
+
+        def post_due(body, headers=chairman_headers):
+            return c.post(url, data={"period": fx_period.pk,
+                                     "charge_type": fx_type.pk, **body},
+                          content_type="application/json", **headers)
+
+        r = post_due({"due_date": "2027-07-15"})
+        data = self._json(r) or {}
+        fx_charges[0].refresh_from_db()
+        self.verify("срок оплаты меняется всем начислениям вида разом",
+                    r.status_code == 200 and data.get("updated") == 2
+                    and str(fx_charges[0].due_date) == "2027-07-15", data)
+        self.verify("о пенях за просрочку, которой больше нет, сказано",
+                    data.get("premature_penalties") == 1, data)
+        self.verify("у пеней срок не появился",
+                    Charge.objects.filter(penalty_for=fx_charges[0],
+                                          due_date__isnull=True).exists())
+
+        r = post_due({"due_date": "2027-08-01", "plot_ids": [fx_plots[1].pk]})
+        fx_charges[0].refresh_from_db()
+        fx_charges[1].refresh_from_db()
+        self.verify("срок меняется только выбранным участкам",
+                    (self._json(r) or {}).get("updated") == 1
+                    and str(fx_charges[0].due_date) == "2027-07-15"
+                    and str(fx_charges[1].due_date) == "2027-08-01",
+                    f"{fx_charges[0].due_date}, {fx_charges[1].due_date}")
+        r = post_due({"due_date": "15.07.2027"})
+        self.verify("неверная дата отклоняется", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+        r = post_due({"due_date": "2027-07-15"}, headers=member_headers)
+        self.verify("рядовой член срок не меняет", r.status_code == 403,
+                    f"HTTP {r.status_code}")
+
         # Пустой результат обязан объяснять причину. Отчёт пользователя:
         # нажал кнопку, получил спокойное сообщение и ушёл уверенный,
         # что пени выписаны, — а у всех начислений просто не был

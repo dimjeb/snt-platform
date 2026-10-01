@@ -304,6 +304,25 @@ with sync_playwright() as pw:
                body_text(page).count("Перенос между начислениями") == 2,
                f"строк {body_text(page).count('Перенос между начислениями')}")
 
+    # 8б. Срок оплаты у уже созданных начислений — разом всем участкам.
+    page.get_by_role("tab", name="Долги").click()
+    page.wait_for_timeout(800)
+    page.get_by_role("button", name="Срок оплаты").click()
+    page.wait_for_timeout(800)
+    page.get_by_label("Вид начисления *").click()
+    page.wait_for_timeout(400)
+    page.get_by_role("option", name="Членский взнос").click()
+    page.wait_for_timeout(300)
+    page.get_by_label("Оплатить до").fill("2027-07-15")
+    page.get_by_role("button", name="Изменить срок").click()
+    page.wait_for_timeout(2000)
+    due_text = body_text(page)
+    verify("срок оплаты меняется из интерфейса",
+           "Срок изменён у" in due_text,
+           due_text[due_text.find("Срок"):][:160] if "Срок" in due_text else "")
+    verify("сказано про пени за просрочку, которой больше нет",
+           "уже начислены пени" in due_text, "")
+
     # 9. Разделение одного платежа выписки по категориям с суммами.
     page.goto(f"{BASE}/statements", wait_until="networkidle")
     page.wait_for_timeout(1500)
