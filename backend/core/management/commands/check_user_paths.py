@@ -406,6 +406,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("КАТЕГОРИИ И ПЕРЕНОС ОПЛАТЫ"))
         self._check_category_and_transfer(c, CH, ME)
 
+        # ---------------- Приём платежа казначеем ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("ПРИЁМ ПЛАТЕЖА КАЗНАЧЕЕМ"))
+        self._check_receive_payment(c, CH, ME)
+
         # ---------------- Электроэнергия ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("ЭЛЕКТРОЭНЕРГИЯ"))
         self._check_electricity_gaps()
@@ -1464,6 +1468,86 @@ class Command(BaseCommand):
                    content_type="application/json", **member_headers)
         self.verify("рядовой член переносить оплату не может",
                     r.status_code == 403, f"HTTP {r.status_code}")
+
+    def _check_receive_payment(self, c, chairman_headers, member_headers):
+        """
+        Деньги, принятые казначеем руками: выбор участка и «за что».
+
+        Правила те же, что у выписки: в выбранное начисление или категорию,
+        в чужую категорию не уходят, излишек — авансом с назначением.
+        """
+        from datetime import date
+        from decimal import Decimal
+
+        from billing.credits import credit_balance
+        from billing.models import BillingPeriod, Charge, ChargeType, Payment
+        from members.models import Plot
+
+        org = self._fixture_org
+        period = BillingPeriod.objects.create(organization=org, year=2032, month=1)
+        membership = ChargeType.objects.create(organization=org,
+                                               category=ChargeType.TYPE_MEMBERSHIP,
+                                               name="Членский (касса)")
+        target = ChargeType.objects.create(organization=org,
+                                           category=ChargeType.TYPE_TARGET,
+                                           name="Целевой (касса)")
+        plot = Plot.objects.create(organization=org, number="КАССА-1")
+        m_charge = Charge.objects.create(organization=org, period=period, plot=plot,
+                                         charge_type=membership, amount=Decimal("1000.00"))
+        t_charge = Charge.objects.create(organization=org, period=period, plot=plot,
+                                         charge_type=target, amount=Decimal("500.00"))
+        url = "/api/billing/payments/receive/"
+
+        def receive(body, headers=chairman_headers):
+            return c.post(url, data={"plot": plot.pk, "date": "2026-10-01",
+                                     "method": "cash", **body},
+                          content_type="application/json", **headers)
+
+        r = receive({"amount": "700", "for": "target"})
+        data = self._json(r) or {}
+        m_charge.refresh_from_db()
+        t_charge.refresh_from_db()
+        self.verify("«за целевой»: в целевой, излишек — целевым авансом, членский не тронут",
+                    r.status_code == 201 and t_charge.paid_amount == Decimal("500.00")
+                    and m_charge.paid_amount == 0
+                    and credit_balance(plot, "target") == Decimal("200.00"),
+                    f"HTTP {r.status_code}, {data}")
+        self.verify("ответ говорит, куда легли деньги",
+                    data.get("paid") and data["paid"][0]["amount"] == Decimal("500.00")
+                    and data.get("earmarked")
+                    and data["earmarked"][0]["amount"] == Decimal("200.00"), data)
+
+        r = receive({"amount": "300", "for": f"charge:{m_charge.pk}"})
+        m_charge.refresh_from_db()
+        self.verify("«за конкретное начисление»: ровно в него",
+                    r.status_code == 201 and m_charge.paid_amount == Decimal("300.00"),
+                    m_charge.paid_amount)
+        self.verify("платёж записан наличными и с тем, кто принял",
+                    Payment.objects.filter(charge=m_charge, method="cash",
+                                           recorded_by__isnull=False).exists())
+
+        r = receive({"amount": "1000", "for": "auto"})
+        m_charge.refresh_from_db()
+        self.verify("«все долги по порядку»: остаток членского закрыт, излишек — общим авансом",
+                    r.status_code == 201 and m_charge.debt == 0
+                    and credit_balance(plot, "") == Decimal("300.00"),
+                    f"долг {m_charge.debt}, общий аванс {credit_balance(plot, '')}")
+
+        other_org_plot = Plot.objects.exclude(organization=org).first()
+        r = c.post(url, data={"plot": other_org_plot.pk, "amount": "100",
+                              "date": "2026-10-01", "for": "auto"},
+                   content_type="application/json", **chairman_headers)
+        self.verify("участок чужого товарищества — отказ", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+        foreign_charge = Charge.objects.filter(organization=org).exclude(plot=plot).first()
+        r = receive({"amount": "100", "for": f"charge:{foreign_charge.pk}"})
+        self.verify("начисление другого участка — отказ", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+        r = receive({"amount": "0", "for": "auto"})
+        self.verify("нулевая сумма — отказ", r.status_code == 400, f"HTTP {r.status_code}")
+        r = receive({"amount": "100", "for": "auto"}, headers=member_headers)
+        self.verify("рядовой член принять платёж не может", r.status_code == 403,
+                    f"HTTP {r.status_code}")
 
     def _check_electricity_gaps(self):
         """

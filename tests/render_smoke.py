@@ -328,6 +328,26 @@ with sync_playwright() as pw:
     verify("сказано про пени за просрочку, которой больше нет",
            "уже начислены пени" in due_text, "")
 
+    # 8в. Казначей принял деньги сам: участок по номеру, «за что», сумма
+    #     подставилась долгом.
+    page.get_by_role("tab", name="Платежи").click()
+    page.wait_for_timeout(600)
+    page.get_by_role("button", name="Принять платёж").click()
+    page.wait_for_timeout(1200)
+    page.get_by_label("Участок — номер или фамилия *").click()
+    page.keyboard.type("№10")
+    page.wait_for_timeout(600)
+    page.get_by_role("option", name="Уч. №10", exact=True).click()
+    page.wait_for_timeout(1500)
+    amount = page.get_by_label("Сумма (₽) *").input_value()
+    verify("сумма подставилась долгом участка", amount == "100", f"сумма {amount!r}")
+    page.get_by_role("button", name="Принять", exact=True).click()
+    page.wait_for_timeout(2000)
+    received = body_text(page)
+    verify("платёж принят и сказано, куда лёг",
+           "Платёж принят: Целевой взнос" in received,
+           received[received.find("Платёж"):][:160] if "Платёж" in received else "")
+
     # 9. Разделение одного платежа выписки по категориям с суммами.
     page.goto(f"{BASE}/statements", wait_until="networkidle")
     page.wait_for_timeout(1500)
