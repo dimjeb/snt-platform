@@ -131,6 +131,50 @@ class ChargeViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(organization=require_org(self.request))
 
+    @action(detail=True, methods=["get"])
+    def transfer_targets(self, request, pk=None):
+        """Куда можно перенести оплату с этого начисления."""
+        from .transfers import transfer_targets
+
+        source = self.get_object()
+        return Response([
+            {
+                "id": c.pk,
+                "label": f"{c.charge_type.name} · {c.period} · уч. {c.plot.number}",
+                "debt": c.debt,
+            }
+            for c in transfer_targets(source)
+        ])
+
+    @action(detail=True, methods=["post"])
+    def transfer(self, request, pk=None):
+        """
+        Перенести часть оплаты с этого начисления на другое того же
+        плательщика. Тело: {"target": id, "amount": "500.00", "reason": "..."}.
+        """
+        from decimal import Decimal, InvalidOperation
+
+        from .transfers import TransferError, transfer_payment
+
+        source = self.get_object()
+        try:
+            target = self.get_queryset().get(pk=request.data.get("target"))
+        except (Charge.DoesNotExist, ValueError, TypeError):
+            return Response({"detail": "Целевое начисление не найдено."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            amount = Decimal(str(request.data.get("amount", "")).replace(",", "."))
+        except InvalidOperation:
+            return Response({"detail": "Сумма указана неверно."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            transfer_payment(source, target, amount, user=request.user,
+                             reason=str(request.data.get("reason", ""))[:500])
+        except TransferError as exc:
+            return Response({"detail": str(exc)},
+                            status=status.HTTP_400_BAD_REQUEST)
+        return Response({"moved": amount})
+
     @action(detail=False, methods=["post"])
     def apply_penalties(self, request):
         """

@@ -61,6 +61,29 @@ def extract_plot_number(purpose: str):
     return None
 
 
+# Категория платежа по назначению. Корни, а не слова целиком: банки и
+# люди пишут «ЦЕЛЕВОЙ», «целевого», «Целевые взносы», «членск. взнос».
+CATEGORY_PATTERNS = {
+    "membership": r"членск",
+    "target": r"целев",
+    # «эл.энергия», «электроэнергия», «за свет», «кВт»
+    "electricity": r"электр|эл\.?\s*энерг|за\s+свет|\bсвет\b|квт",
+}
+
+
+def extract_category(purpose: str) -> str:
+    """
+    На что платили, если это видно из назначения: membership / target /
+    electricity. Пустая строка, если категория не названа — или названо
+    сразу несколько («членский и целевой взнос»): тогда угадывать нельзя,
+    деньги разносятся как обычно, от старых начислений к новым.
+    """
+    text = _normalize(purpose)
+    found = [name for name, pattern in CATEGORY_PATTERNS.items()
+             if re.search(pattern, text)]
+    return found[0] if len(found) == 1 else ""
+
+
 def _name_key(text: str):
     """
     Ключ для сравнения ФИО: фамилия и первые буквы имени и отчества.

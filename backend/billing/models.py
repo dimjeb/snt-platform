@@ -159,6 +159,7 @@ class Payment(OrgModel):
     METHOD_BANK = "bank"
     METHOD_SBP = "sbp"
     METHOD_CARD = "card"
+    METHOD_TRANSFER = "transfer"
     METHOD_OTHER = "other"
 
     METHOD_CHOICES = [
@@ -166,6 +167,10 @@ class Payment(OrgModel):
         (METHOD_BANK, "Банковский перевод"),
         (METHOD_SBP, "СБП"),
         (METHOD_CARD, "Карта"),
+        # Не новые деньги, а перекладывание уже полученных с одного
+        # начисления на другое (см. billing.transfers). Всегда парой:
+        # минус на исходном начислении, плюс на целевом.
+        (METHOD_TRANSFER, "Перенос между начислениями"),
         (METHOD_OTHER, "Прочее"),
     ]
 
@@ -284,6 +289,17 @@ class BankTransaction(OrgModel):
     )
     match_kind = models.CharField("Как опознан", max_length=10,
                                   choices=MATCH_CHOICES, default=MATCH_NONE)
+    # На что человек платил, если это видно из назначения платежа:
+    # «целевой взнос уч. 57» → target. При проведении деньги сначала идут
+    # в начисления этой категории и только остаток — в остальные. Пусто —
+    # категория не названа или названо сразу несколько. Казначей может
+    # поправить до проведения.
+    category = models.CharField(
+        "Назначение по категории", max_length=20, blank=True,
+        choices=[("membership", "Членский взнос"),
+                 ("target", "Целевой взнос"),
+                 ("electricity", "Электроэнергия")],
+    )
     status = models.CharField("Статус", max_length=10, choices=STATUS_CHOICES,
                               default=STATUS_NEW)
     note = models.CharField("Комментарий", max_length=255, blank=True)

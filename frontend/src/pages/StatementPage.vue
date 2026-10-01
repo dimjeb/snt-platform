@@ -60,6 +60,25 @@
             </q-item-label>
             <q-item-label caption>{{ t.payer_name }}</q-item-label>
             <q-item-label caption class="text-grey-7">{{ t.purpose }}</q-item-label>
+            <!-- На что платили. Сайт угадывает по назначению платежа, а
+                 казначей поправляет до проведения: при проведении деньги
+                 сначала идут в начисления этой категории. -->
+            <q-item-label caption>
+              <q-select
+                v-if="statement.status !== 'applied'"
+                :model-value="t.category"
+                :options="categoryOptions"
+                emit-value map-options dense borderless
+                options-dense
+                style="max-width: 220px"
+                @update:model-value="(v) => setCategory(t, v)"
+              >
+                <template #prepend><q-icon name="label" size="16px" /></template>
+              </q-select>
+              <span v-else-if="t.category" class="text-grey-8">
+                {{ t.category_display }}
+              </span>
+            </q-item-label>
             <q-item-label caption v-if="t.note" class="text-orange-9">
               {{ t.note }}
             </q-item-label>
@@ -253,6 +272,22 @@ async function openStatement(id) {
   const s = await api.get(`/billing/statements/${id}/summary/`)
   summary.value = s.data
   await loadPlots()
+}
+
+const categoryOptions = [
+  { label: 'Категория не указана', value: '' },
+  { label: 'Членский взнос', value: 'membership' },
+  { label: 'Целевой взнос', value: 'target' },
+  { label: 'Электроэнергия', value: 'electricity' },
+]
+
+async function setCategory(transaction, category) {
+  try {
+    await api.patch(`/billing/transactions/${transaction.id}/`, { category })
+    transaction.category = category
+  } catch (e) {
+    $q.notify({ type: 'negative', message: 'Не удалось сохранить категорию' })
+  }
 }
 
 async function assignPlot(transaction, plotId) {

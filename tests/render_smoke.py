@@ -100,6 +100,8 @@ with sync_playwright() as pw:
                "Ставка за сотку" in help_text)
         verify("на сайте описан взнос «за члена»",
                "За члена товарищества" in help_text)
+        verify("на сайте описан перенос оплаты",
+               "Хочу перенести оплату" in help_text)
         verify("на сайте описаны пени за просрочку",
                "Хочу начислить пени за просрочку" in help_text
                and "не задвоятся" in help_text)
@@ -279,6 +281,28 @@ with sync_playwright() as pw:
            0 <= parent < penalty and "Уч. №2 " not in between
            and "Целевой взнос" not in between,
            f"позиции {parent} и {penalty}")
+
+    # 8. Перенос оплаты через интерфейс: с оплаченного целевого участка 2
+    #    на его же членский.
+    transfer_buttons = page.get_by_role("button", name="Перенести оплату")
+    verify("у оплаченного начисления есть кнопка переноса",
+           transfer_buttons.count() >= 1, f"кнопок {transfer_buttons.count()}")
+    if transfer_buttons.count():
+        transfer_buttons.first.click()
+        page.wait_for_timeout(1500)
+        page.get_by_label("На начисление *").click()
+        page.wait_for_timeout(600)
+        page.get_by_role("option").first.click()
+        page.wait_for_timeout(400)
+        page.get_by_role("button", name="Перенести", exact=True).click()
+        page.wait_for_timeout(2500)
+        verify("перенос оплаты проходит из интерфейса",
+               "Перенесено" in body_text(page), body_text(page)[:200])
+        page.get_by_role("tab", name="Платежи").click()
+        page.wait_for_timeout(1200)
+        verify("перенос виден в платежах парой строк",
+               body_text(page).count("Перенос между начислениями") == 2,
+               f"строк {body_text(page).count('Перенос между начислениями')}")
 
     browser.close()
 

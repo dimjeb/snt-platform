@@ -28,6 +28,34 @@ class PaymentSerializer(serializers.ModelSerializer):
         exclude = ("organization",)
         read_only_fields = ("created_at", "updated_at", "recorded_by")
 
+    def validate(self, data):
+        if self.instance is not None and self.instance.method == Payment.METHOD_TRANSFER:
+            # Строка переноса живёт только в паре со своей половиной.
+            # Поправить одну — значит разбалансировать перенос.
+            raise serializers.ValidationError(
+                "Перенос не правится. Ошиблись — перенесите обратно."
+            )
+        if data.get("method") == Payment.METHOD_TRANSFER:
+            raise serializers.ValidationError({
+                "method": "Перенос делается кнопкой «Перенести оплату», "
+                          "а не вводом платежа: так он записывается парой.",
+            })
+        amount = data.get("amount")
+        if amount is not None and amount <= 0:
+            raise serializers.ValidationError(
+                {"amount": "Сумма платежа должна быть больше нуля."}
+            )
+        charge = data.get("charge")
+        request = self.context.get("request")
+        org = getattr(request, "org", None)
+        if charge is not None and org is not None and charge.organization_id != org.pk:
+            # Поле charge принимало любой id — казначей одного СНТ мог
+            # провести платёж по начислению другого.
+            raise serializers.ValidationError(
+                {"charge": "Начисление не найдено в этом товариществе."}
+            )
+        return data
+
 
 class ChargeSerializer(serializers.ModelSerializer):
     paid_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
@@ -136,6 +164,8 @@ class BankTransactionSerializer(serializers.ModelSerializer):
                                                read_only=True)
     status_display = serializers.CharField(source="get_status_display",
                                            read_only=True)
+    category_display = serializers.CharField(source="get_category_display",
+                                             read_only=True)
 
     class Meta:
         model = BankTransaction
@@ -143,6 +173,7 @@ class BankTransactionSerializer(serializers.ModelSerializer):
         # Менять руками можно только привязку к участку: суммы и даты
         # приходят из банка, и правка их означала бы расхождение с
         # выпиской, которое потом никто не объяснит.
+        # Участок и категорию казначей правит до проведения — остальное нет.
         read_only_fields = (
             "statement", "doc_number", "date", "amount", "payer_name",
             "payer_account", "purpose", "status", "created_at", "updated_at",

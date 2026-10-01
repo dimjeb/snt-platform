@@ -18,7 +18,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from .credits import add_credit
-from .matching import MATCH_NONE, MATCH_PLOT, match_documents
+from .matching import MATCH_NONE, MATCH_PLOT, extract_category, match_documents
 from .models import BankStatement, BankTransaction, Charge, Payment
 from .statement import parse_statement
 
@@ -80,6 +80,7 @@ def import_statement(organization, *, raw: bytes, file_name: str, user=None):
                     date=doc.doc_date,
                     amount=doc.amount,
                     payer_name=doc.payer_name[:255],
+                    category=extract_category(doc.purpose),
                     payer_account=doc.payer_account[:34],
                     purpose=doc.purpose,
                     plot=plot,
@@ -131,6 +132,14 @@ def apply_statement(statement, *, user=None):
                 .prefetch_related("payments")
                 .order_by("period__year", "period__month", "pk")
             )
+            if row.category:
+                # Человек написал, на что платит, — сначала туда. Иначе
+                # «целевой взнос» закрыл бы более старый членский, и
+                # пришлось бы потом переносить руками. Сортировка
+                # устойчивая: внутри обеих групп порядок от старых к новым.
+                charges.sort(
+                    key=lambda c: c.charge_type.category != row.category
+                )
             remaining = row.amount
             for charge in charges:
                 if remaining <= 0:
