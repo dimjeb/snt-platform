@@ -1278,6 +1278,21 @@ class Command(BaseCommand):
                     Payment.objects.filter(charge=legacy_member,
                                            amount=Decimal("5980.00")).exists())
 
+        # --- сводка долгов: за что именно должен ---
+        from billing.services import get_debt_summary
+
+        summary = {r["plot_number"]: r for r in get_debt_summary(org, period=new_period)}
+        lone_items = {i["name"]: i for i in summary["12"]["items"]}
+        self.verify("в сводке долгов разбивка по видам начислений",
+                    lone_items.get("Членский", {}).get("debt") == Decimal("5980.00")
+                    and lone_items.get("Целевой", {}).get("debt") == Decimal("0")
+                    and lone_items.get("Целевой", {}).get("charged") == Decimal("6410.00"),
+                    {k: (v["charged"], v["debt"]) for k, v in lone_items.items()})
+        legacy_adv = summary["14"]["advances"]
+        self.verify("в сводке виден аванс и на что он ждёт",
+                    legacy_adv == [{"category": "target", "amount": Decimal("6410.00")}],
+                    legacy_adv)
+
         call_command("fix_earmarked_statements", "--org", str(org.pk), verbosity=0)
         legacy_member.refresh_from_db()
         self.verify("повторный запуск исправления ничего не меняет",

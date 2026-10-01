@@ -245,6 +245,9 @@ with sync_playwright() as pw:
     debt_text = body_text(page)
     verify("в сводке долгов видно имя собственника",
            "Проверкин" in debt_text, debt_text[:200])
+    verify("в сводке долгов видно, за что долг",
+           "Членский взнос" in debt_text and "долг 1" in debt_text,
+           debt_text[debt_text.find("Проверкин"):][:200])
 
     page.get_by_role("button", name="Начислить пени").click()
     page.wait_for_timeout(800)
