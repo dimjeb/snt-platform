@@ -378,6 +378,44 @@ with sync_playwright() as pw:
            "Разделено: Членский взнос 600,00 ₽ + Целевой взнос 400,00 ₽" in split_text,
            split_text[split_text.find("Разделено"):][:120] if "Разделено" in split_text else "строки нет")
 
+    # 10. Оплата с телефона: камерой свой экран не отсканировать, поэтому
+    #     QR сохраняется в галерею, а реквизиты копируются по одному.
+    phone = browser.new_context(
+        viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True,
+        user_agent=("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                    "Mobile/15E148 Safari/604.1"),
+    )
+    try:
+        phone.grant_permissions(["clipboard-read", "clipboard-write"], origin=BASE)
+    except Exception:
+        pass
+    mobile = phone.new_page()
+    mobile.goto(f"{BASE}/login", wait_until="networkidle")
+    fields = mobile.locator("input")
+    fields.nth(0).fill(LOGIN)
+    fields.nth(1).fill(new_password)
+    mobile.get_by_role("button", name="Войти").click()
+    mobile.wait_for_url("**/dashboard", timeout=15000)
+    mobile.wait_for_timeout(2000)
+    mobile.get_by_role("button", name="Оплатить по QR из банка").click()
+    mobile.wait_for_timeout(2500)
+    phone_text = body_text(mobile)
+    verify("с телефона сказано сохранить QR и открыть из галереи",
+           "из галереи" in phone_text, phone_text[:120])
+    verify("с телефона есть кнопка «Сохранить QR»",
+           mobile.get_by_role("button", name="Сохранить QR").count() == 1)
+    verify("с телефона есть пошаговая подсказка",
+           "Как оплатить с этого телефона" in phone_text)
+    copy_buttons = mobile.get_by_role("button", name="Скопировать: Счёт")
+    verify("у реквизитов есть кнопка «Скопировать»", copy_buttons.count() == 1)
+    if copy_buttons.count():
+        copy_buttons.click()
+        mobile.wait_for_timeout(600)
+        verify("реквизит копируется одним нажатием",
+               "Счёт: скопировано" in body_text(mobile), "")
+    phone.close()
+
     browser.close()
 
 print()
