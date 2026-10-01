@@ -1,0 +1,1 @@
+import{V as e,W as t}from"./index-DFv_TOIe.js";var n=t(({app:t})=>{t.use(e())});export{n as default};

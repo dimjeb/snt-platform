@@ -312,9 +312,19 @@ with sync_playwright() as pw:
     page.get_by_role("button", name="Разделить по категориям").first.click()
     page.wait_for_timeout(800)
     amounts = page.get_by_label("Сумма", exact=True)
+    # По умолчанию — распознанная категория на всю сумму платежа.
+    verify("в разделении подставлена распознанная категория на всю сумму",
+           amounts.count() == 1 and amounts.nth(0).input_value() == "1000.00"
+           and "Членский взнос" in page.locator(".q-dialog").inner_text(),
+           f"строк {amounts.count()}, сумма {amounts.nth(0).input_value() if amounts.count() else '—'}")
     amounts.nth(0).fill("600")
-    amounts.nth(1).fill("400")
+    page.wait_for_timeout(200)
+    # «Ещё категория» — следующая невыбранная и остаток.
+    page.get_by_role("button", name="Ещё категория").click()
     page.wait_for_timeout(300)
+    verify("вторая часть подставилась сама: целевой и остаток 400",
+           amounts.count() == 2 and amounts.nth(1).input_value() == "400",
+           f"вторая сумма {amounts.nth(1).input_value() if amounts.count() > 1 else '—'}")
     verify("подсказка показывает, что разделено полностью",
            "Разделено полностью" in body_text(page), "")
     page.get_by_role("button", name="Сохранить").click()

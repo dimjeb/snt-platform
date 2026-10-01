@@ -161,8 +161,9 @@ split_statement = BankStatement.objects.create(organization=org,
                                                file_name="split-check.xlsx")
 BankTransaction.objects.create(
     organization=org, statement=split_statement, doc_number="77",
-    date=date(2026, 9, 25), amount="1000.00", purpose="взносы уч 1",
+    date=date(2026, 9, 25), amount="1000.00", purpose="членский взнос уч 1",
     plot=p, member=m, match_kind=BankTransaction.MATCH_PLOT,
+    category="membership",
 )
 u = User(username=os.environ["SMOKE_LOGIN"], organization=org, member=m,
          role=User.ROLE_MEMBER, is_active=True, must_change_password=True)
