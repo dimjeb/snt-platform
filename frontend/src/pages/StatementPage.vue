@@ -172,7 +172,7 @@
           </div>
           <q-btn v-if="splitParts.length < 3" flat dense size="sm" icon="add"
                  label="Ещё категория" color="blue-8"
-                 @click="splitParts.push({ category: null, amount: '' })" />
+                 @click="addSplitPart" />
           <div class="text-caption"
                :class="splitRest < 0 ? 'text-negative' : 'text-grey-8'">
             <template v-if="splitRest < 0">
@@ -361,12 +361,27 @@ const splitPartsValid = computed(() => splitParts.value.every(
   (p) => p.category && Number(p.amount) > 0,
 ) && new Set(splitParts.value.map((p) => p.category)).size === splitParts.value.length)
 
+// По умолчанию — то, что распознано из назначения платежа, на всю сумму.
+// Казначею остаётся уменьшить её и добавить вторую категорию, а не
+// заполнять всё с нуля.
 function openSplit(row) {
   splitRow.value = row
   splitParts.value = (row.allocation && row.allocation.length)
     ? row.allocation.map((p) => ({ ...p }))
-    : [{ category: 'membership', amount: '' }, { category: 'target', amount: '' }]
+    : [{ category: row.category || null, amount: String(row.amount) }]
   splitDialog.value = true
+}
+
+// Новая строка: следующая ещё не выбранная категория и неразделённый
+// остаток. В обычном случае «членский + целевой» руками вводится одно
+// число — сумма первой части.
+function addSplitPart() {
+  const used = new Set(splitParts.value.map((p) => p.category))
+  const next = splitCategoryOptions.find((o) => !used.has(o.value))
+  splitParts.value.push({
+    category: next ? next.value : null,
+    amount: splitRest.value > 0 ? String(splitRest.value) : '',
+  })
 }
 
 async function saveSplit() {

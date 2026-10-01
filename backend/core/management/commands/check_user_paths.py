@@ -1159,6 +1159,32 @@ class Command(BaseCommand):
         self.verify("проведённую строку править нельзя", r.status_code == 400,
                     f"HTTP {r.status_code}")
 
+        # --- категория для строк, загруженных до её появления ---
+        import importlib
+
+        from django.apps import apps as django_apps
+
+        backfill = importlib.import_module(
+            "billing.migrations.0009_backfill_transaction_category").backfill
+        old_statement = BankStatement.objects.create(organization=org,
+                                                     file_name="old.xlsx")
+        waiting = BankTransaction.objects.create(
+            organization=org, statement=old_statement, doc_number="10",
+            date=date(2026, 9, 1), amount=Decimal("100.00"),
+            purpose="ЦЕЛЕВОЙ ВЗНОС 5 УЧ")
+        done = BankTransaction.objects.create(
+            organization=org, statement=old_statement, doc_number="11",
+            date=date(2026, 9, 1), amount=Decimal("100.00"),
+            purpose="ЦЕЛЕВОЙ ВЗНОС 5 УЧ",
+            status=BankTransaction.STATUS_APPLIED)
+        backfill(django_apps, None)
+        waiting.refresh_from_db()
+        done.refresh_from_db()
+        self.verify("старым непроведённым строкам категория проставлена",
+                    waiting.category == "target", waiting.category)
+        self.verify("проведённые строки задним числом не трогаются",
+                    done.category == "", done.category)
+
         # --- перенос ---
         # Казначей по ошибке провёл 2000 наличными в целевой вместо членского.
         t2 = Charge.objects.create(organization=org, period=new_period, plot=plot,
