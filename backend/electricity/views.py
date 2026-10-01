@@ -8,7 +8,7 @@ from billing.models import BillingPeriod
 from .models import EnergyTariff, Meter, MeterReading
 from .serializers import (
     EnergyTariffSerializer, MeterSerializer, MeterReadingSerializer,
-    CalculateElectricitySerializer,
+    CalculateElectricitySerializer, MeterOpeningSerializer, apply_opening,
 )
 from .services import calculate_electricity
 import dataclasses
@@ -35,6 +35,28 @@ class MeterViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(organization=require_org(self.request))
+
+    @action(detail=True, methods=["post"], permission_classes=[IsTreasurer])
+    def opening(self, request, pk=None):
+        """
+        Показание и долг за свет для счётчика, заведённого без них.
+
+        То же, что поля «Что на счётчике сейчас» при добавлении. Долг
+        можно внести и отдельно, без показания.
+        """
+        from django.utils import timezone
+
+        meter = self.get_object()
+        s = MeterOpeningSerializer(data=request.data,
+                                   context={"request": request, "meter": meter})
+        s.is_valid(raise_exception=True)
+        d = s.validated_data
+        apply_opening(meter, user=request.user,
+                      reading=d.get("initial_reading"),
+                      night=d.get("initial_reading_night"),
+                      on_date=d.get("initial_date") or timezone.localdate(),
+                      debt=d.get("opening_debt"))
+        return Response(MeterSerializer(meter).data, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=["post"], permission_classes=[IsTreasurer])
     def calculate(self, request):
