@@ -1,1 +1,0 @@
-import{G as e,H as t}from"./index-CG7031NQ.js";var n=e(({app:e})=>{e.use(t())});export{n as default};

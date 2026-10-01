@@ -79,7 +79,18 @@
                 </template>
               </q-item-label>
             </q-item-section>
-            <q-item-section side>{{ formatMoney(c.amount) }} ₽</q-item-section>
+            <q-item-section side>
+              <div>{{ formatMoney(c.amount) }} ₽</div>
+              <div v-if="Number(c.paid_amount) > 0" class="text-caption text-green-8">
+                оплачено {{ formatMoney(c.paid_amount) }}
+              </div>
+              <q-btn
+                v-if="Number(c.paid_amount) > 0"
+                flat dense size="sm" color="blue-8" icon="swap_horiz"
+                label="Перенести оплату"
+                @click="openTransfer(c)"
+              />
+            </q-item-section>
           </q-item>
           <q-item v-if="!charges.length">
             <q-item-section class="text-center text-grey-6">Нет начислений</q-item-section>
@@ -254,6 +265,46 @@
       </q-card>
     </q-dialog>
 
+    <!-- Диалог: перенос оплаты между начислениями одного плательщика -->
+    <q-dialog v-model="transferDialog" persistent>
+      <q-card style="min-width:340px;max-width:480px">
+        <q-card-section class="text-h6">Перенести оплату</q-card-section>
+        <q-card-section v-if="transferSource" class="q-gutter-sm">
+          <div class="text-body2">
+            С начисления: <b>{{ transferSource.charge_type_name }}</b>,
+            уч. №{{ transferSource.plot_number }}
+            — оплачено {{ formatMoney(transferSource.paid_amount) }} ₽
+          </div>
+          <q-select
+            v-model="transferForm.target"
+            :options="transferTargets"
+            option-label="label" option-value="id"
+            emit-value map-options outlined dense
+            :loading="transferLoading"
+            label="На начисление *"
+            :hint="transferTargets.length || transferLoading ? 'Только начисления того же плательщика с остатком долга'
+              : 'Перенести некуда: у этого плательщика нет других неоплаченных начислений'"
+            @update:model-value="suggestTransferAmount"
+          />
+          <q-input v-model="transferForm.amount" label="Сумма (₽) *" outlined dense type="number" />
+          <q-input v-model="transferForm.reason" label="Причина" outlined dense
+                   hint="Например: «платил целевой, легло в членский»" />
+          <div class="text-caption text-grey-8 charge-preview">
+            Исходный платёж не меняется и не удаляется. Сайт запишет перенос
+            двумя строками — минус здесь и плюс там, — так что всегда видно,
+            кто, когда и почему переложил деньги. Ошибся с переносом —
+            перенесите обратно.
+          </div>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="Отмена" v-close-popup />
+          <q-btn color="blue-8" label="Перенести" :loading="actionLoading"
+                 :disable="!transferForm.target || !Number(transferForm.amount)"
+                 @click="doTransfer" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
     <!-- Диалог: платёж -->
     <q-dialog v-model="paymentDialog" persistent>
       <q-card style="min-width:320px">
@@ -335,7 +386,10 @@ const methodOptions = [
   { label: 'СБП', value: 'sbp' },
   { label: 'Карта', value: 'card' },
 ]
-function methodLabel(m) { return methodOptions.find((o) => o.value === m)?.label || m }
+function methodLabel(m) {
+  if (m === 'transfer') return 'Перенос между начислениями'
+  return methodOptions.find((o) => o.value === m)?.label || m
+}
 function formatMoney(v) { return v ? Number(v).toLocaleString('ru-RU', { maximumFractionDigits: 0 }) : '0' }
 function formatDate(v) { return v ? v.split('-').reverse().join('.') : '' }
 
@@ -707,6 +761,48 @@ async function applyPenalties() {
     }
   } catch (e) {
     $q.notify({ type: 'negative', message: errText(e, 'Не удалось начислить пени') })
+  } finally { actionLoading.value = false }
+}
+
+const transferDialog = ref(false)
+const transferSource = ref(null)
+const transferTargets = ref([])
+const transferLoading = ref(false)
+const transferForm = ref({ target: null, amount: '', reason: '' })
+
+async function openTransfer(charge) {
+  transferSource.value = charge
+  transferForm.value = { target: null, amount: '', reason: '' }
+  transferTargets.value = []
+  transferDialog.value = true
+  transferLoading.value = true
+  try {
+    const { data } = await api.get(`/billing/charges/${charge.id}/transfer_targets/`)
+    transferTargets.value = data.map((t) => ({
+      ...t, label: `${t.label} — долг ${formatMoney(t.debt)} ₽`,
+    }))
+  } finally { transferLoading.value = false }
+}
+
+// Подставляем максимум, который можно перенести: не больше оплаченного
+// здесь и не больше долга там — иначе сервер всё равно откажет.
+function suggestTransferAmount(targetId) {
+  const target = transferTargets.value.find((t) => t.id === targetId)
+  if (!target || !transferSource.value) return
+  transferForm.value.amount = String(
+    Math.min(Number(transferSource.value.paid_amount), Number(target.debt)),
+  )
+}
+
+async function doTransfer() {
+  actionLoading.value = true
+  try {
+    await api.post(`/billing/charges/${transferSource.value.id}/transfer/`, transferForm.value)
+    transferDialog.value = false
+    await onPeriodChange(selectedPeriod.value)
+    $q.notify({ type: 'positive', message: `Перенесено ${formatMoney(transferForm.value.amount)} ₽` })
+  } catch (e) {
+    $q.notify({ type: 'negative', message: errText(e, 'Не удалось перенести') })
   } finally { actionLoading.value = false }
 }
 

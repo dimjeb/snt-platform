@@ -402,6 +402,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("ЦЕЛЕВОЙ ВЗНОС ЗА ЧЛЕНА"))
         self._check_target_per_member(c, CH, ME)
 
+        # ---------------- Категория в выписке и перенос оплаты ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("КАТЕГОРИИ И ПЕРЕНОС ОПЛАТЫ"))
+        self._check_category_and_transfer(c, CH, ME)
+
         # ---------------- Электроэнергия ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("ЭЛЕКТРОЭНЕРГИЯ"))
         self._check_electricity_gaps()
@@ -1001,6 +1005,136 @@ class Command(BaseCommand):
         r = c.get("/api/billing/charges/", **chairman_headers)
         self.verify("председатель список начислений видит",
                     r.status_code == 200, f"HTTP {r.status_code}")
+
+    def _check_category_and_transfer(self, c, chairman_headers, member_headers):
+        """
+        Платёж с подписью «целевой взнос» идёт в целевой, а не в более
+        старый членский. А если деньги всё же легли не туда — их можно
+        перенести, не правя и не удаляя исходный платёж.
+        """
+        from datetime import date
+        from decimal import Decimal
+
+        from billing.models import (BankStatement, BankTransaction, BillingPeriod,
+                                    Charge, ChargeType, Payment)
+        from billing.statement_service import apply_statement
+        from billing.transfers import TransferError, transfer_payment
+        from members.models import Member, Plot, PlotOwnership
+        from organizations.models import Organization
+
+        org = Organization.objects.create(name="Проверка категорий", is_active=True)
+        old_period = BillingPeriod.objects.create(organization=org, year=2026, month=1)
+        new_period = BillingPeriod.objects.create(organization=org, year=2026, month=9)
+        membership = ChargeType.objects.create(
+            organization=org, category=ChargeType.TYPE_MEMBERSHIP, name="Членский")
+        target = ChargeType.objects.create(
+            organization=org, category=ChargeType.TYPE_TARGET, name="Целевой")
+
+        owner = Member.objects.create(organization=org, last_name="Плательщиков",
+                                      first_name="П")
+        plot = Plot.objects.create(organization=org, number="5")
+        PlotOwnership.objects.create(organization=org, plot=plot, member=owner,
+                                     date_from=date(2026, 1, 1))
+        # Членский старше — при старой раскладке «от старых к новым» он
+        # забрал бы деньги первым.
+        m_charge = Charge.objects.create(organization=org, period=old_period,
+                                         plot=plot, charge_type=membership,
+                                         amount=Decimal("3000.00"))
+        t_charge = Charge.objects.create(organization=org, period=new_period,
+                                         plot=plot, charge_type=target,
+                                         amount=Decimal("5000.00"))
+
+        statement = BankStatement.objects.create(organization=org, file_name="t.xlsx")
+        BankTransaction.objects.create(
+            organization=org, statement=statement, doc_number="1",
+            date=date(2026, 9, 20), amount=Decimal("5000.00"),
+            purpose="ЦЕЛЕВОЙ ВЗНОС 5 УЧ", plot=plot, member=owner,
+            match_kind=BankTransaction.MATCH_PLOT, category="target",
+        )
+        apply_statement(statement)
+        m_charge.refresh_from_db()
+        t_charge.refresh_from_db()
+        self.verify("«целевой взнос» закрыл целевой, а не старый членский",
+                    t_charge.debt == 0 and m_charge.paid_amount == 0,
+                    f"целевой долг {t_charge.debt}, членский оплачен {m_charge.paid_amount}")
+
+        # --- перенос ---
+        # Казначей по ошибке провёл 2000 наличными в целевой вместо членского.
+        t2 = Charge.objects.create(organization=org, period=new_period, plot=plot,
+                                   charge_type=target, amount=Decimal("2000.00"),
+                                   description="второй целевой")
+        Payment.objects.create(organization=org, charge=t2, date=date(2026, 9, 25),
+                               amount=Decimal("2000.00"), method=Payment.METHOD_CASH)
+        total_before = sum(p.amount for p in Payment.objects.filter(organization=org))
+
+        transfer_payment(t2, m_charge, Decimal("2000.00"))
+        m_charge.refresh_from_db()
+        t2.refresh_from_db()
+        self.verify("перенос: членский получил деньги, целевой их отдал",
+                    m_charge.paid_amount == Decimal("2000.00")
+                    and t2.paid_amount == 0,
+                    f"членский {m_charge.paid_amount}, целевой {t2.paid_amount}")
+        total_after = sum(p.amount for p in Payment.objects.filter(organization=org))
+        self.verify("перенос не создаёт и не теряет денег",
+                    total_before == total_after, f"{total_before} → {total_after}")
+        self.verify("исходный платёж не правился и не удалялся",
+                    Payment.objects.filter(charge=t2, method=Payment.METHOD_CASH,
+                                           amount=Decimal("2000.00")).exists())
+        self.verify("перенос записан парой со ссылкой друг на друга",
+                    Payment.objects.filter(method=Payment.METHOD_TRANSFER,
+                                           organization=org)
+                    .values("external_ref").distinct().count() == 1)
+
+        def refused(src, dst, amount):
+            try:
+                transfer_payment(src, dst, Decimal(amount))
+            except TransferError:
+                return True
+            return False
+
+        self.verify("нельзя перенести больше, чем оплачено",
+                    refused(t2, m_charge, "1.00"))
+        self.verify("нельзя перенести сверх остатка долга (переплата)",
+                    refused(t_charge, m_charge, "1500.00"))
+
+        stranger = Member.objects.create(organization=org, last_name="Чужой",
+                                         first_name="Ч")
+        other_plot = Plot.objects.create(organization=org, number="9")
+        PlotOwnership.objects.create(organization=org, plot=other_plot,
+                                     member=stranger, date_from=date(2026, 1, 1))
+        foreign = Charge.objects.create(organization=org, period=new_period,
+                                        plot=other_plot, charge_type=membership,
+                                        amount=Decimal("3000.00"))
+        self.verify("нельзя перенести на начисление другого человека",
+                    refused(t_charge, foreign, "100.00"))
+
+        # --- через API ---
+        r = c.get(f"/api/billing/charges/{t_charge.pk}/transfer_targets/",
+                  **chairman_headers)
+        self.verify("список «куда перенести» под чужим СНТ не отдаётся",
+                    r.status_code == 404, f"HTTP {r.status_code}")
+        r = c.post("/api/billing/payments/",
+                   data={"charge": t_charge.pk, "amount": "100",
+                         "date": "2026-09-30", "method": "cash"},
+                   content_type="application/json", **chairman_headers)
+        self.verify("платёж по начислению чужого СНТ отклоняется",
+                    r.status_code == 400, f"HTTP {r.status_code}")
+        own_charge = Charge.objects.filter(organization=self._fixture_org).first()
+        for body, label in (
+            ({"amount": "-100", "method": "cash"}, "отрицательный платёж"),
+            ({"amount": "100", "method": "transfer"}, "ручной «перенос» без пары"),
+        ):
+            r = c.post("/api/billing/payments/",
+                       data={"charge": own_charge.pk, "date": "2026-09-30", **body},
+                       content_type="application/json", **chairman_headers)
+            self.verify(f"{label} отклоняется", r.status_code == 400,
+                        f"HTTP {r.status_code}")
+
+        r = c.post(f"/api/billing/charges/{t_charge.pk}/transfer/",
+                   data={"target": m_charge.pk, "amount": "100"},
+                   content_type="application/json", **member_headers)
+        self.verify("рядовой член переносить оплату не может",
+                    r.status_code == 403, f"HTTP {r.status_code}")
 
     def _check_electricity_gaps(self):
         """
@@ -1910,6 +2044,10 @@ class Command(BaseCommand):
         self.verify("строки «ИТОГО» в платежи не попали",
                     BankTransaction.objects.filter(
                         statement_id=data["id"]).count() == 2)
+        self.verify("категория «целевой» распознана из назначения",
+                    BankTransaction.objects.filter(
+                        statement_id=data["id"], doc_number="9002",
+                        category="target").exists())
         self.verify("номер участка перед словом «уч» опознан",
                     (data.get("summary") or {}).get("by_plot") == 1,
                     (data.get("summary") or {}).get("by_plot"))

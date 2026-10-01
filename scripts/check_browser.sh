@@ -142,6 +142,17 @@ for number in ("10", "2"):
     extra = Plot.objects.create(organization=org, number=number, area_sotok="6.00")
     Charge.objects.create(organization=org, period=period, plot=extra,
                           charge_type=ctype, amount="100.00")
+
+# Перенос оплаты: у участка 2 оплачен целевой, а должен был — членский.
+from billing.models import Payment
+
+plot2 = Plot.objects.get(organization=org, number="2")
+paid_target = Charge.objects.get(plot=plot2, charge_type=ctype)
+Payment.objects.create(organization=org, charge=paid_target, date=date(2026, 9, 20),
+                       amount="100.00", method=Payment.METHOD_CASH)
+Charge.objects.create(organization=org, period=period, plot=plot2,
+                      charge_type=overdue_type, amount="100.00",
+                      description="членский участка 2")
 u = User(username=os.environ["SMOKE_LOGIN"], organization=org, member=m,
          role=User.ROLE_MEMBER, is_active=True, must_change_password=True)
 u.set_password(os.environ["SMOKE_PASSWORD"])
