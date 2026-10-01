@@ -26,6 +26,10 @@
           <q-btn size="sm" outline color="green-8" icon="add" label="Членский взнос" @click="bulkMembershipDialog = true" />
           <q-btn size="sm" outline color="blue-8" icon="add" label="Целевой взнос" @click="bulkTargetDialog = true" />
           <q-btn
+            size="sm" outline color="grey-8" icon="event"
+            label="Срок оплаты" @click="openDueDate"
+          />
+          <q-btn
             size="sm" outline color="deep-orange-8" icon="gavel"
             label="Начислить пени" :loading="actionLoading"
             @click="confirmPenalties"
@@ -261,6 +265,52 @@
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
           <q-btn color="blue-8" label="Начислить" :loading="actionLoading" @click="createTarget" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Диалог: срок оплаты у уже созданных начислений -->
+    <q-dialog v-model="dueDialog" persistent>
+      <q-card style="min-width:340px;max-width:480px">
+        <q-card-section class="text-h6">Срок оплаты</q-card-section>
+        <q-card-section class="q-gutter-sm">
+          <q-select
+            v-model="dueForm.charge_type"
+            :options="dueTypeOptions"
+            emit-value map-options outlined dense
+            label="Вид начисления *"
+            hint="Только из начислений выбранного периода"
+          />
+          <q-option-group
+            v-model="dueScope"
+            :options="[
+              { label: 'Всем участкам', value: 'all' },
+              { label: 'Выбранным участкам', value: 'some' },
+            ]"
+            color="grey-8" dense inline
+          />
+          <q-select
+            v-if="dueScope === 'some'"
+            v-model="dueForm.plot_ids"
+            :options="plotOptions"
+            :loading="plotsLoading"
+            option-label="label" option-value="value"
+            emit-value map-options
+            multiple use-chips use-input input-debounce="0"
+            label="Участки" outlined dense
+            @filter="filterPlots"
+          />
+          <q-input v-model="dueForm.due_date" label="Оплатить до" outlined dense type="date"
+                   hint="Оставьте пустым, чтобы снять срок вовсе" />
+          <q-input v-model="dueForm.penalty_percent" label="Пени, % от остатка долга"
+                   outlined dense type="number"
+                   hint="Пусто — оставить как было" />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="Отмена" v-close-popup />
+          <q-btn color="grey-9" label="Изменить срок" :loading="actionLoading"
+                 :disable="!dueForm.charge_type || (dueScope === 'some' && !dueForm.plot_ids.length)"
+                 @click="saveDueDate" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -761,6 +811,60 @@ async function applyPenalties() {
     }
   } catch (e) {
     $q.notify({ type: 'negative', message: errText(e, 'Не удалось начислить пени') })
+  } finally { actionLoading.value = false }
+}
+
+const dueDialog = ref(false)
+const dueScope = ref('all')
+const dueForm = ref({ charge_type: null, plot_ids: [], due_date: '', penalty_percent: '' })
+
+// Виды начислений, которые реально есть в выбранном периоде, без пеней:
+// у пеней своего срока нет.
+const dueTypeOptions = computed(() => {
+  const seen = new Map()
+  for (const c of charges.value) {
+    if (c.penalty_for) continue
+    if (!seen.has(c.charge_type)) seen.set(c.charge_type, c.charge_type_name)
+  }
+  return [...seen].map(([value, label]) => ({ value, label }))
+})
+
+function openDueDate() {
+  dueForm.value = { charge_type: dueTypeOptions.value[0]?.value || null,
+    plot_ids: [], due_date: '', penalty_percent: '' }
+  dueScope.value = 'all'
+  dueDialog.value = true
+  loadPlots()
+}
+
+async function saveDueDate() {
+  actionLoading.value = true
+  try {
+    const { data } = await api.post('/billing/charges/set_due_date/', {
+      period: selectedPeriod.value,
+      charge_type: dueForm.value.charge_type,
+      plot_ids: dueScope.value === 'some' ? dueForm.value.plot_ids : null,
+      due_date: dueForm.value.due_date || null,
+      penalty_percent: dueForm.value.penalty_percent,
+    })
+    dueDialog.value = false
+    await onPeriodChange(selectedPeriod.value)
+    if (data.premature_penalties) {
+      // Пени выписаны за просрочку, которой при новом сроке нет. Снимать
+      // их кнопкой мы не даём намеренно — это делает администратор, — но
+      // промолчать здесь значит оставить людям незаконные пени.
+      $q.notify({
+        type: 'warning', timeout: 0, multiLine: true,
+        actions: [{ label: 'Понятно', color: 'white' }],
+        message: `Срок изменён у ${data.updated} начислений. По ${data.premature_penalties} `
+          + 'из них уже начислены пени, а новый срок ещё не наступил. Эти пени '
+          + 'стоит снять: администратор — команда remove_penalties.',
+      })
+    } else {
+      $q.notify({ type: 'positive', message: `Срок изменён у ${data.updated} начислений` })
+    }
+  } catch (e) {
+    $q.notify({ type: 'negative', message: errText(e, 'Не удалось изменить срок') })
   } finally { actionLoading.value = false }
 }
 

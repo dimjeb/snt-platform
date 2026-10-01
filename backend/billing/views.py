@@ -176,6 +176,74 @@ class ChargeViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
         return Response({"moved": amount})
 
     @action(detail=False, methods=["post"])
+    def set_due_date(self, request):
+        """
+        Поменять срок оплаты у уже созданных начислений разом.
+
+        Тело: {"period": id, "charge_type": id, "plot_ids": [..] | null,
+               "due_date": "2027-07-15" | null, "penalty_percent": "20"}.
+        plot_ids пусто — все участки. due_date пусто — срок снимается.
+
+        Пени сюда не входят: у них своего срока нет. Если по этим
+        начислениям пени уже начислены, а новый срок ещё не наступил,
+        ответ называет их число — такие пени выписаны за просрочку,
+        которой теперь нет, и их стоит снять (remove_penalties).
+        """
+        from datetime import date as date_cls
+        from decimal import Decimal, InvalidOperation
+
+        from django.utils import timezone
+
+        org = require_org(request)
+        data = request.data
+        qs = Charge.objects.filter(
+            organization=org,
+            period_id=data.get("period"),
+            charge_type_id=data.get("charge_type"),
+            penalty_for__isnull=True,
+        ).exclude(charge_type__category=ChargeType.TYPE_PENALTY)
+        plot_ids = data.get("plot_ids")
+        if plot_ids:
+            qs = qs.filter(plot_id__in=plot_ids)
+
+        raw_date = data.get("due_date") or None
+        try:
+            due = date_cls.fromisoformat(raw_date) if raw_date else None
+        except (TypeError, ValueError):
+            return Response({"detail": "Дата указана неверно."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        fields = {"due_date": due}
+        if data.get("penalty_percent") not in (None, ""):
+            try:
+                percent = Decimal(str(data["penalty_percent"]).replace(",", "."))
+            except InvalidOperation:
+                return Response({"detail": "Процент пеней указан неверно."},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if not 0 <= percent <= 100:
+                return Response({"detail": "Процент пеней — от 0 до 100."},
+                                status=status.HTTP_400_BAD_REQUEST)
+            fields["penalty_percent"] = percent
+
+        ids = list(qs.values_list("pk", flat=True))
+        if not ids:
+            return Response({"detail": "Таких начислений в этом периоде нет."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        # update() не трогает auto_now — проставляем сами, чтобы по
+        # updated_at было видно, когда срок меняли.
+        Charge.objects.filter(pk__in=ids).update(**fields, updated_at=timezone.now())
+
+        today = timezone.localdate()
+        premature = Charge.objects.filter(penalty_for_id__in=ids)
+        if due is not None:
+            premature = premature.filter(penalty_for__due_date__gte=today)
+        return Response({
+            "updated": len(ids),
+            # Пени за просрочку, которой при новом сроке ещё нет (или срок
+            # снят вовсе): их стоит снять.
+            "premature_penalties": premature.count(),
+        })
+
+    @action(detail=False, methods=["post"])
     def apply_penalties(self, request):
         """
         Начислить пени по всем просроченным начислениям товарищества.
