@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 #
-# Шифрованная резервная копия базы на Яндекс Диск.
+# Резервная копия на Яндекс Диск: база, загруженные файлы и сам проект.
 #
-# Порядок: pg_dump -> gzip -> gpg (AES256) -> WebDAV. База в открытом виде
+#   disk:/Бэкапы/snt-platform/snt-<дата>.sql.gz.gpg    база (шифр.)
+#   disk:/Бэкапы/snt-platform/media-<дата>.tgz.gpg     файлы из /media (шифр.)
+#   disk:/Бэкапы/snt-platform/code/snt-platform.bundle весь git с историей
+#   disk:/Бэкапы/snt-platform/code/КОНТЕКСТ-РАЗРАБОТКИ.md
+#
+# База: pg_dump -> gzip -> gpg (AES256) -> REST API Диска. В открытом виде
 # на диск не ложится ни на секунду: всё идёт конвейером через память.
+#
+# Код и контекст разработки — без шифрования: секретов и персональных
+# данных в репозитории нет (.env и выгрузки в git не попадают), а читать
+# их при восстановлении проще без пароля. Кладутся под постоянным именем
+# с перезаписью — нужна последняя версия, а история и так внутри bundle.
 #
 # Копия содержит персональные данные членов СНТ, поэтому шифрование здесь
 # не украшение. Незашифрованный дамп в чужом облаке — это утечка со всеми
@@ -97,36 +107,75 @@ fi
 log "Проверка пройдена"
 
 # ── 3. Отправка на Яндекс Диск ──
-log "Отправляю на Яндекс Диск"
 API="https://cloud-api.yandex.net/v1/disk/resources"
 AUTH="Authorization: OAuth ${YANDEX_DISK_TOKEN}"
 
 # Папку создаём молча: 409 означает «уже есть», это не ошибка.
-curl -s -X PUT -H "$AUTH" --get "$API" \
-     --data-urlencode "path=disk:/Бэкапы" -o /dev/null
-curl -s -X PUT -H "$AUTH" --get "$API" \
-     --data-urlencode "path=${REMOTE_DIR}" -o /dev/null
+mkdir_remote() {
+  curl -s -X PUT -H "$AUTH" --get "$API" \
+       --data-urlencode "path=$1" -o /dev/null
+}
 
-UPLOAD_URL=$(curl -s -H "$AUTH" --get "${API}/upload" \
-  --data-urlencode "path=${REMOTE_DIR}/${NAME}" \
-  --data-urlencode "overwrite=true" \
-  | python3 -c 'import sys,json; print(json.load(sys.stdin).get("href",""))')
+# upload <локальный файл> <путь на Диске>
+upload() {
+  local file="$1" remote="$2" url http
+  url=$(curl -s -H "$AUTH" --get "${API}/upload" \
+    --data-urlencode "path=${remote}" \
+    --data-urlencode "overwrite=true" \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin).get("href",""))')
+  if [[ -z "$url" ]]; then
+    log "ОШИБКА: Яндекс Диск не выдал ссылку для загрузки ${remote} (проверьте токен)"
+    exit 1
+  fi
+  http=$(curl -s -o /dev/null -w '%{http_code}' -T "$file" "$url")
+  if [[ "$http" != "201" && "$http" != "202" ]]; then
+    log "ОШИБКА: загрузка ${remote} вернула HTTP ${http}"
+    exit 1
+  fi
+  log "Загружено: ${remote}"
+}
 
-if [[ -z "$UPLOAD_URL" ]]; then
-  log "ОШИБКА: Яндекс Диск не выдал ссылку для загрузки (проверьте токен)"
+log "Отправляю базу на Яндекс Диск"
+mkdir_remote "disk:/Бэкапы"
+mkdir_remote "${REMOTE_DIR}"
+mkdir_remote "${REMOTE_DIR}/code"
+upload "$LOCAL" "${REMOTE_DIR}/${NAME}"
+
+# ── 3а. Загруженные файлы (логотип, фото показаний) ──
+# Без них восстановленный сайт поднимется с битыми картинками. Фото
+# счётчиков привязаны к участкам — это тоже персональные данные, шифруем.
+MEDIA="${LOCAL_DIR}/media-${STAMP}.tgz.gpg"
+log "Упаковываю /media"
+docker compose exec -T backend tar czf - -C /app media \
+  | gpg --batch --yes --symmetric --cipher-algo AES256 \
+        --passphrase-fd 3 --output "$MEDIA" 3<<<"$BACKUP_PASSPHRASE"
+chmod 600 "$MEDIA"
+if ! gpg --batch --quiet --decrypt --passphrase-fd 3 "$MEDIA" 3<<<"$BACKUP_PASSPHRASE" \
+     | tar tzf - >/dev/null 2>&1; then
+  log "ОШИБКА: архив /media не расшифровывается или повреждён"
   exit 1
 fi
+upload "$MEDIA" "${REMOTE_DIR}/$(basename "$MEDIA")"
 
-HTTP=$(curl -s -o /dev/null -w '%{http_code}' -T "$LOCAL" "$UPLOAD_URL")
-if [[ "$HTTP" != "201" && "$HTTP" != "202" ]]; then
-  log "ОШИБКА: загрузка вернула HTTP ${HTTP}"
+# ── 3б. Код проекта с полной историей и контекст разработки ──
+# Нужен на случай, когда пропал и GitHub, и аккаунт ассистента: из
+# bundle проект клонируется как из обычного репозитория
+# (git clone snt-platform.bundle), а КОНТЕКСТ-РАЗРАБОТКИ.md — первое,
+# что читает новый человек или новый аккаунт.
+BUNDLE="${LOCAL_DIR}/snt-platform.bundle"
+log "Собираю git bundle"
+git bundle create "$BUNDLE" --all 2>/dev/null
+if ! git bundle verify "$BUNDLE" >/dev/null 2>&1; then
+  log "ОШИБКА: git bundle не проходит проверку"
   exit 1
 fi
-log "Загружено: ${REMOTE_DIR}/${NAME}"
+upload "$BUNDLE" "${REMOTE_DIR}/code/snt-platform.bundle"
+upload "docs/КОНТЕКСТ-РАЗРАБОТКИ.md" "${REMOTE_DIR}/code/КОНТЕКСТ-РАЗРАБОТКИ.md"
 
 # ── 4. Ротация локальных копий ──
 # На Яндекс Диске копии не трогаем: облако и нужно как независимое хранилище,
 # а чистить его автоматически — лишний способ потерять данные.
-find "$LOCAL_DIR" -name 'snt-*.sql.gz.gpg' -mtime "+${KEEP_DAYS}" -delete
-log "Локально храним ${KEEP_DAYS} дней; сейчас копий: $(find "$LOCAL_DIR" -name 'snt-*.gpg' | wc -l)"
+find "$LOCAL_DIR" \( -name 'snt-*.sql.gz.gpg' -o -name 'media-*.tgz.gpg' \) \
+     -mtime "+${KEEP_DAYS}" -delete
+log "Локально храним ${KEEP_DAYS} дней; сейчас: баз $(find "$LOCAL_DIR" -name 'snt-*.gpg' | wc -l), архивов media $(find "$LOCAL_DIR" -name 'media-*.gpg' | wc -l)"
 log "Готово"
