@@ -79,6 +79,10 @@ chmod 700 "$LOCAL_DIR"
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 
+# Заголовок прогона: по нему install_backup_cron.sh --status находит
+# в журнале последний запуск.
+echo "=== $(date '+%Y-%m-%d %H:%M:%S %Z') ==="
+
 # ── 1. Дамп, сжатие и шифрование одним конвейером ──
 log "Снимаю дамп базы ${POSTGRES_DB}"
 docker compose exec -T db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
