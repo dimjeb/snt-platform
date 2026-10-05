@@ -22,7 +22,8 @@
 # Настройки берутся из .env рядом с docker-compose.yml:
 #   BACKUP_PASSPHRASE   пароль шифрования (длинный, случайный)
 #   YANDEX_DISK_TOKEN   OAuth-токен приложения Яндекс Диска
-#   BACKUP_KEEP_DAYS    сколько дней хранить локальные копии (по умолчанию 14)
+#   BACKUP_KEEP_DAYS    глубина: сколько дней хранить копии базы и media —
+#                       и на сервере, и на Яндекс Диске (по умолчанию 14)
 #
 # ВАЖНО: BACKUP_PASSPHRASE храните ОТДЕЛЬНО от сервера — в менеджере паролей.
 # Если он есть только в .env на той же машине, что и база, потеря машины
@@ -139,11 +140,24 @@ upload() {
   log "Загружено: ${remote}"
 }
 
+# Что мы сами положили на Диск — список для чистки старых копий.
+# Ведём его здесь, а не спрашиваем у Диска: токену бэкапа хватает права
+# на запись (cloud_api:disk.write), а листинг папки требует ещё и чтения.
+# Удаляем только то, что сами загрузили, — чужие файлы в папке не тронем.
+MANIFEST="${LOCAL_DIR}/uploaded.list"
+if [[ ! -f "$MANIFEST" ]]; then
+  # Первый запуск с чисткой: подхватываем копии, что ещё лежат локально.
+  find "$LOCAL_DIR" \( -name 'snt-*.sql.gz.gpg' -o -name 'media-*.tgz.gpg' \) \
+       -printf "${REMOTE_DIR}/%f\n" | sort > "$MANIFEST"
+fi
+remember() { echo "$1" >> "$MANIFEST"; }
+
 log "Отправляю базу на Яндекс Диск"
 mkdir_remote "disk:/Бэкапы"
 mkdir_remote "${REMOTE_DIR}"
 mkdir_remote "${REMOTE_DIR}/code"
 upload "$LOCAL" "${REMOTE_DIR}/${NAME}"
+remember "${REMOTE_DIR}/${NAME}"
 
 # ── 3а. Загруженные файлы (логотип, фото показаний) ──
 # Без них восстановленный сайт поднимется с битыми картинками. Фото
@@ -160,6 +174,7 @@ if ! gpg --batch --quiet --decrypt --passphrase-fd 3 "$MEDIA" 3<<<"$BACKUP_PASSP
   exit 1
 fi
 upload "$MEDIA" "${REMOTE_DIR}/$(basename "$MEDIA")"
+remember "${REMOTE_DIR}/$(basename "$MEDIA")"
 
 # ── 3б. Код проекта с полной историей и контекст разработки ──
 # Нужен на случай, когда пропал и GitHub, и аккаунт ассистента: из
@@ -176,10 +191,38 @@ fi
 upload "$BUNDLE" "${REMOTE_DIR}/code/snt-platform.bundle"
 upload "docs/КОНТЕКСТ-РАЗРАБОТКИ.md" "${REMOTE_DIR}/code/КОНТЕКСТ-РАЗРАБОТКИ.md"
 
-# ── 4. Ротация локальных копий ──
-# На Яндекс Диске копии не трогаем: облако и нужно как независимое хранилище,
-# а чистить его автоматически — лишний способ потерять данные.
+# ── 4. Глубина хранения: KEEP_DAYS дней — на сервере и на Диске ──
+# Сюда доходим, только если сегодняшние копии уже загружены (любая ошибка
+# выше обрывает скрипт), — старое не удалится раньше, чем легло новое.
+# Возраст берём из даты в имени файла, а не из даты изменения: она не
+# зависит от того, когда и как файл копировали.
 find "$LOCAL_DIR" \( -name 'snt-*.sql.gz.gpg' -o -name 'media-*.tgz.gpg' \) \
      -mtime "+${KEEP_DAYS}" -delete
-log "Локально храним ${KEEP_DAYS} дней; сейчас: баз $(find "$LOCAL_DIR" -name 'snt-*.gpg' | wc -l), архивов media $(find "$LOCAL_DIR" -name 'media-*.gpg' | wc -l)"
+
+CUTOFF=$(date -d "-${KEEP_DAYS} days" +%Y-%m-%d)
+KEPT=$(mktemp)
+REMOVED=0
+while IFS= read -r remote; do
+  [[ -n "$remote" ]] || continue
+  day=$(basename "$remote" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -n1 || true)
+  if [[ -z "$day" || ! "$day" < "$CUTOFF" ]]; then
+    echo "$remote" >> "$KEPT"
+    continue
+  fi
+  # В корзину, а не насовсем: Диск сам очищает её через 30 дней, и до
+  # тех пор ошибочно удалённую копию можно вернуть.
+  http=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "$AUTH" --get "$API" \
+         --data-urlencode "path=${remote}" --data-urlencode "permanently=false")
+  if [[ "$http" == "202" || "$http" == "204" || "$http" == "404" ]]; then
+    REMOVED=$((REMOVED + 1))
+  else
+    log "ВНИМАНИЕ: не удалось удалить с Диска ${remote} (HTTP ${http}), попробую в следующий раз"
+    echo "$remote" >> "$KEPT"
+  fi
+done < "$MANIFEST"
+sort -u "$KEPT" > "$MANIFEST"
+rm -f "$KEPT"
+
+log "Глубина ${KEEP_DAYS} дней: удалено с Диска старых копий — ${REMOVED}; на Диске копий базы $(grep -c '/snt-[0-9]' "$MANIFEST" || true), media $(grep -c '/media-[0-9]' "$MANIFEST" || true)"
+log "Локально: баз $(find "$LOCAL_DIR" -name 'snt-*.gpg' | wc -l), архивов media $(find "$LOCAL_DIR" -name 'media-*.gpg' | wc -l)"
 log "Готово"
