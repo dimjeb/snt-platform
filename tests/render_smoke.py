@@ -495,6 +495,43 @@ with sync_playwright() as pw:
     page.wait_for_timeout(1000)
     verify("загруженный счётчик появился в списке", "XL-777" in body_text(page), "")
 
+    # 9в-2. Смета: создать, добавить статью, увидеть взнос, утвердить,
+    #       скачать выгрузку для бухгалтера.
+    page.goto(f"{BASE}/budget", wait_until="networkidle")
+    page.wait_for_timeout(1200)
+    page.get_by_role("button", name="Новая смета").click()
+    page.wait_for_timeout(400)
+    page.locator(".q-dialog").get_by_label("Год *").fill("2027")
+    page.get_by_role("button", name="Создать").click()
+    page.wait_for_timeout(1500)
+    page.get_by_role("button", name="Статья").first.click()
+    page.wait_for_timeout(400)
+    page.locator(".q-dialog").get_by_label("Статья *").fill("Охрана")
+    page.locator(".q-dialog").get_by_text("Считать как количество × цена").click()
+    page.locator(".q-dialog").get_by_label("Количество", exact=True).fill("12")
+    page.locator(".q-dialog").get_by_label("Цена, ₽").fill("1000")
+    page.get_by_role("button", name="Сохранить").click()
+    page.wait_for_timeout(1500)
+    rate = page.locator("[data-test=rate]").inner_text()
+    budget_text = body_text(page).replace("\u00a0", " ").replace("\u202f", " ")
+    verify("смета: статья «12 × 1000» = 12 000 и посчитан членский взнос",
+           "12 000,00 ₽" in budget_text and "₽" in rate and "—" not in rate,
+           rate)
+    page.get_by_role("button", name="Утвердить (по решению собрания)").click()
+    page.wait_for_timeout(400)
+    page.locator(".q-dialog").get_by_label("Дата собрания *").fill("2027-04-20")
+    page.locator(".q-dialog").get_by_label("Номер протокола").fill("3")
+    page.get_by_role("button", name="Утвердить", exact=True).click()
+    page.wait_for_timeout(1500)
+    verify("смета: утверждена — видна дата собрания и протокол",
+           "Утверждена 20.04.2027, протокол № 3" in body_text(page), "")
+    page.get_by_role("tab", name="Для бухгалтера").click()
+    page.wait_for_timeout(500)
+    with page.expect_download(timeout=15000) as dl:
+        page.get_by_role("button", name="Скачать выгрузку").click()
+    verify("выгрузка для бухгалтера скачивается файлом Excel",
+           dl.value.suggested_filename.endswith(".xlsx"), dl.value.suggested_filename)
+
     # 9г. Мастер нового садоводства — под администратором платформы.
     admin_ctx = browser.new_context(viewport={"width": 1280, "height": 900})
     adm = admin_ctx.new_page()

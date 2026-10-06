@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     "electricity",
     "payments",
     "reports",
+    "budget",
 ]
 
 # ─── Middleware ────────────────────────────────────────────────────────────────

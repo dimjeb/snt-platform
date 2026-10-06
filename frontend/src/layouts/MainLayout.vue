@@ -113,6 +113,11 @@
               <q-item-section>Банковская выписка</q-item-section>
             </q-item>
 
+            <q-item clickable v-ripple to="/budget" class="snt-nav-item">
+              <q-item-section avatar><q-icon name="account_balance_wallet" /></q-item-section>
+              <q-item-section>Смета и расходы</q-item-section>
+            </q-item>
+
             <q-item clickable v-ripple to="/reports" class="snt-nav-item">
               <q-item-section avatar><q-icon name="bar_chart" /></q-item-section>
               <q-item-section>Отчёты</q-item-section>
@@ -293,6 +298,7 @@ const pageTitles = {
   '/reports': 'Отчёты',
   '/organization': 'Товарищество',
   '/setup': 'Новое садоводство',
+  '/budget': 'Смета и расходы',
 }
 const pageTitle = computed(() => pageTitles[route.path] || 'СНТ Платформа')
 
