@@ -495,6 +495,66 @@ with sync_playwright() as pw:
     page.wait_for_timeout(1000)
     verify("загруженный счётчик появился в списке", "XL-777" in body_text(page), "")
 
+    # 9г. Мастер нового садоводства — под администратором платформы.
+    admin_ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+    adm = admin_ctx.new_page()
+    adm.goto(f"{BASE}/login", wait_until="networkidle")
+    adm.locator("input").nth(0).fill(LOGIN + "-admin")
+    adm.locator("input").nth(1).fill(PASSWORD)
+    adm.get_by_role("button", name="Войти").click()
+    adm.wait_for_url("**/dashboard", timeout=15000)
+    adm.goto(f"{BASE}/setup", wait_until="networkidle")
+    adm.wait_for_timeout(1000)
+    adm.get_by_label("Название *").fill("СНТ «Браузерное»")
+    adm.get_by_role("button", name="Дальше").first.click()
+    adm.wait_for_timeout(500)
+    step2 = adm.locator(".q-stepper__step").nth(1)
+    step2.get_by_label("Фамилия *").first.fill("Мастеров")
+    step2.get_by_label("Имя *").first.fill("Иван")
+    step2.get_by_text("Есть отдельный казначей").click()
+    adm.wait_for_timeout(300)
+    adm.get_by_role("button", name="Создать садоводство").click()
+    adm.wait_for_timeout(2500)
+    created_text = adm.locator(".q-stepper").inner_text()
+    verify("мастер: садоводство создано, логин и временный пароль председателя показаны",
+           "Садоводство «СНТ «Браузерное»» создано" in created_text
+           and "Председатель" in created_text and "Временный пароль" in created_text,
+           created_text[:300])
+    adm.get_by_role("button", name="Дальше").last.click()
+    adm.wait_for_timeout(600)
+    adm.get_by_role("button", name="Загрузить из Excel").first.click()
+    adm.wait_for_timeout(500)
+    adm.locator(".q-dialog input[type=file]").set_input_files(
+        {"name": "r.xlsx", "mimeType":
+         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+         "buffer": _xlsx([["№ участка", "ФИО"], ["1", "Мастеров Иван"],
+                          ["2", "Огородов Пётр"]])})
+    adm.wait_for_timeout(400)
+    adm.get_by_role("button", name="Проверить").click()
+    adm.wait_for_timeout(1500)
+    adm.get_by_role("button", name="Загрузить", exact=True).click()
+    adm.wait_for_timeout(1500)
+    adm.get_by_role("button", name="Закрыть").click()
+    adm.wait_for_timeout(600)
+    wiz = adm.locator(".q-stepper").inner_text()
+    verify("мастер: реестр загружен в новое садоводство (председатель не задвоен)",
+           "Загружено: членов 1, участков 2" in wiz, wiz[wiz.find("Реестр"):][:160])
+    adm.get_by_role("button", name="Дальше").last.click()
+    adm.wait_for_timeout(400)
+    adm.get_by_role("button", name="Пропустить").last.click()
+    adm.wait_for_timeout(400)
+    adm.get_by_role("button", name="Пропустить").last.click()
+    adm.wait_for_timeout(400)
+    final = adm.locator(".q-stepper").inner_text()
+    verify("мастер: итог — что загружено и что пропущено",
+           "Долги: пропущено" in final and "Реестр членов: членов 1" in final, final[-300:])
+    adm.get_by_role("button", name="Перейти в садоводство").click()
+    adm.wait_for_url("**/dashboard", timeout=15000)
+    adm.wait_for_timeout(1500)
+    verify("мастер: после перехода выбрано новое садоводство",
+           "Браузерное" in body_text(adm), "")
+    admin_ctx.close()
+
     # 10. Оплата с телефона: камерой свой экран не отсканировать, поэтому
     #     QR сохраняется в галерею, а реквизиты копируются по одному.
     phone = browser.new_context(

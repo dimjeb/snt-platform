@@ -24,6 +24,8 @@ from .services import (
     get_debt_summary,
 )
 from .statement import StatementError
+from core.xlsx import import_response, template_response
+from . import debt_import
 from .statement_service import (
     StatementImportError,
     apply_statement,
@@ -130,6 +132,25 @@ class ChargeViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(organization=require_org(self.request))
+
+    @action(detail=False, methods=["post"], url_path="import")
+    def import_xlsx(self, request):
+        """
+        Загрузить долги (начальные остатки) из Excel. dry_run=true (по
+        умолчанию) — только проверить и показать отчёт.
+        """
+        org = require_org(request)
+        return import_response(
+            request, debt_import.COLUMNS, debt_import.REQUIRED,
+            lambda rows: debt_import.import_debts(org, rows, request.user))
+
+    @action(detail=False, methods=["get"], url_path="import-template")
+    def import_template(self, request):
+        """Шаблон Excel для загрузки долгов."""
+        return template_response("Шаблон — долги.xlsx",
+                                 debt_import.TEMPLATE_HEADER,
+                                 debt_import.template_examples(),
+                                 debt_import.TEMPLATE_NOTES)
 
     @action(detail=True, methods=["get"])
     def transfer_targets(self, request, pk=None):

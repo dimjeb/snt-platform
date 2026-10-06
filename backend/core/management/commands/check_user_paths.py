@@ -418,6 +418,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("ЗАГРУЗКА ИЗ EXCEL"))
         self._check_excel_import(c, CH, ME)
 
+        # ---------------- Мастер нового садоводства ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("МАСТЕР НОВОГО САДОВОДСТВА"))
+        self._check_snt_setup(c, AD, CH, ME)
+
         # ---------------- Новый счётчик: показание и долг ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("НОВЫЙ СЧЁТЧИК: ПОКАЗАНИЕ И ДОЛГ"))
         self._check_meter_opening(c, CH, ME)
@@ -1642,6 +1646,174 @@ class Command(BaseCommand):
         self.verify("логотип убирается вместе с файлом",
                     r.status_code == 204 and not org.logo
                     and not default_storage.exists(last),
+                    f"HTTP {r.status_code}")
+
+    def _check_snt_setup(self, c, admin_headers, chairman_headers, member_headers):
+        """
+        Мастер: товарищество + председатель + казначей одной транзакцией,
+        затем в новом СНТ — реестр, долги и счётчики из Excel.
+        """
+        import io
+        import json as _json
+        from decimal import Decimal
+
+        import openpyxl
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from accounts.models import User
+        from billing.credits import add_credit
+        from billing.models import Charge, ChargeType
+        from electricity.models import Meter
+        from members.models import Member, Plot
+        from organizations.models import Organization
+
+        url = "/api/organizations/setup/"
+        NAME = "СНТ «Проверка мастера»"
+        body = {
+            "organization": {"name": NAME, "full_name": "СНТ «ПРОВЕРКА МАСТЕРА»",
+                             "inn": "3800000005", "legal_address": "Иркутская обл."},
+            "chairman": {"last_name": "Мастеров", "first_name": "Пётр",
+                         "patronymic": "Ильич", "phone": "+7 900 000-00-11"},
+            "treasurer": {"last_name": "Счётова", "first_name": "Анна"},
+        }
+
+        def post(data, headers=admin_headers):
+            return c.post(url, data=_json.dumps(data), content_type="application/json",
+                          **headers)
+
+        r = post(body, headers=chairman_headers)
+        self.verify("мастер: председатель СНТ новое садоводство не заводит",
+                    r.status_code == 403, f"HTTP {r.status_code}")
+        bad = dict(body, organization=dict(body["organization"], inn="12"))
+        r = post(bad)
+        self.verify("мастер: неверный ИНН — отказ, ничего не создано",
+                    r.status_code == 400 and not Organization.objects.filter(name=NAME).exists(),
+                    f"HTTP {r.status_code}, {self._json(r)}")
+        same = dict(body, treasurer=dict(body["chairman"]))
+        r = post(same)
+        self.verify("мастер: казначей = председатель — понятный отказ",
+                    r.status_code == 400 and "treasurer" in (self._json(r) or {}),
+                    f"HTTP {r.status_code}")
+
+        r = post(body)
+        data = self._json(r) or {}
+        org = Organization.objects.filter(name=NAME).first()
+        accounts = {a["role"]: a for a in data.get("accounts", [])}
+        self.verify("мастер: создано товарищество, председатель и казначей",
+                    r.status_code == 201 and org is not None
+                    and set(accounts) == {"chairman", "treasurer"}
+                    and User.objects.filter(organization=org, role="chairman",
+                                            member__last_name="Мастеров").exists()
+                    and User.objects.filter(organization=org, role="treasurer").exists(),
+                    f"HTTP {r.status_code}, {data}")
+        r = post(body)
+        self.verify("мастер: второй раз с тем же названием — отказ, дубля нет",
+                    r.status_code == 400
+                    and Organization.objects.filter(name=NAME).count() == 1,
+                    f"HTTP {r.status_code}")
+        if org is None:
+            return
+
+        ch = accounts.get("chairman", {})
+        r = c.post("/api/auth/token/",
+                   data=_json.dumps({"username": ch.get("username"),
+                                     "password": ch.get("password")}),
+                   content_type="application/json")
+        token = (self._json(r) or {}).get("access")
+        me = self._json(c.get("/api/me/", HTTP_AUTHORIZATION=f"Bearer {token}")) or {}
+        self.verify("мастер: председатель входит выданным паролем, сайт просит его сменить",
+                    r.status_code == 200 and me.get("role") == "chairman"
+                    and me.get("must_change_password") is True
+                    and me.get("organization") == org.pk,
+                    f"HTTP {r.status_code}, role={me.get('role')}")
+
+        hdr = dict(admin_headers, HTTP_X_ORG_ID=str(org.pk))
+
+        def xlsx(rows):
+            wb = openpyxl.Workbook()
+            for row in rows:
+                wb.active.append(row)
+            buf = io.BytesIO()
+            wb.save(buf)
+            return buf.getvalue()
+
+        def upload(path, rows, dry=False, headers=hdr):
+            return c.post(path, data={"file": SimpleUploadedFile("f.xlsx", xlsx(rows)),
+                                      "dry_run": "true" if dry else "false"}, **headers)
+
+        r = upload("/api/members/import/", [
+            ["№ участка", "ФИО", "Соток"],
+            ["1", "Мастеров Пётр Ильич", 6],
+            ["2", "Садовая Ольга", 8],
+        ])
+        chair = Member.objects.filter(organization=org, last_name="Мастеров")
+        self.verify("мастер → реестр: участок председателя привязан к нему же, без дубля",
+                    r.status_code == 200 and chair.count() == 1
+                    and Plot.objects.filter(organization=org, number="1",
+                                            ownerships__member=chair.first()).exists(),
+                    f"HTTP {r.status_code}, членов «Мастеров»: {chair.count()}")
+
+        plot2 = Plot.objects.get(organization=org, number="2")
+        add_credit(plot2, amount=Decimal("1000.00"), date=plot2.created_at.date(),
+                   organization=org, notes="проверка")
+        debts = [
+            ["Участок", "Сумма, ₽", "За что", "Год", "Описание", "Срок оплаты"],
+            ["1", 4500, "членский", 2025, "", ""],
+            ["1", "1 250,50", "свет", "", "", ""],
+            ["2", 3000, "целевой", 2025, "Взнос на дорогу", "01.07.2026"],
+            ["2", 700, "Погорелец", 2025, "", ""],
+            ["9", 100, "членский", 2025, "", ""],
+            ["1", 100, "членский", 1999, "", ""],
+        ]
+        r = upload("/api/billing/charges/import/", debts, dry=True)
+        data = self._json(r) or {}
+        self.verify("долги: «Проверить» ничего не пишет",
+                    r.status_code == 200
+                    and dict(data.get("stats") or []).get("Долги внесены") == 3
+                    and not Charge.objects.filter(organization=org).exists(),
+                    f"HTTP {r.status_code}, {data.get('stats')}")
+        issues = " | ".join(data.get("issues") or [])
+        self.verify("долги: незнакомое «за что», нет участка, плохой год — названы",
+                    "строка 5: «Погорелец» — непонятно" in issues
+                    and "строка 6: участка 9 нет в реестре" in issues
+                    and "строка 7: год «1999» не распознан" in issues, issues)
+        r = upload("/api/billing/charges/import/", debts)
+        c1 = Charge.objects.filter(organization=org, plot__number="1")
+        t = Charge.objects.filter(organization=org, plot=plot2).first()
+        self.verify("долги: внесены в годовые периоды нужных видов",
+                    r.status_code == 200 and c1.count() == 2
+                    and c1.filter(charge_type__category="membership", period__year=2025,
+                                  period__month__isnull=True, amount=Decimal("4500")).exists()
+                    and c1.filter(charge_type__category="electricity",
+                                  amount=Decimal("1250.50")).exists()
+                    and t is not None and str(t.due_date) == "2026-07-01"
+                    and t.description == "Взнос на дорогу",
+                    f"HTTP {r.status_code}")
+        self.verify("долги: аванс участка сразу погасил долг",
+                    t is not None and t.paid_amount == Decimal("1000.00"),
+                    t and t.paid_amount)
+        r = upload("/api/billing/charges/import/", debts)
+        self.verify("долги: повторная загрузка не задваивает",
+                    Charge.objects.filter(organization=org).count() == 3
+                    and dict((self._json(r) or {}).get("stats") or []).get("Уже были") == 3,
+                    (self._json(r) or {}).get("stats"))
+        self.verify("долги: вид «Электроэнергия» в СНТ один (на нём держится расчёт)",
+                    ChargeType.objects.filter(organization=org,
+                                              category="electricity").count() == 1)
+        r = upload("/api/billing/charges/import/", debts, headers=member_headers)
+        self.verify("долги: рядовой член загрузить не может", r.status_code == 403,
+                    f"HTTP {r.status_code}")
+        r = c.get("/api/billing/charges/import-template/", **hdr)
+        self.verify("долги: шаблон скачивается", r.status_code == 200
+                    and r.content[:4] == b"PK\x03\x04", f"HTTP {r.status_code}")
+
+        r = upload("/api/electricity/meters/import/", [
+            ["Участок", "Номер счётчика", "Дата", "Показание"],
+            ["1", "M-1", "01.10.2026", 100],
+        ])
+        self.verify("мастер → счётчики: загружены в новое СНТ",
+                    r.status_code == 200
+                    and Meter.objects.filter(organization=org, serial_number="M-1").exists(),
                     f"HTTP {r.status_code}")
 
     def _check_excel_import(self, c, chairman_headers, member_headers):
