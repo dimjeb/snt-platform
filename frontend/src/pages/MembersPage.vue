@@ -3,6 +3,8 @@
     <div class="row items-center q-mb-md">
       <div class="text-h6">Члены СНТ</div>
       <q-space />
+      <q-btn icon="upload_file" color="green-8" flat no-caps label="Загрузить из Excel"
+             class="q-mr-xs" @click="importDialog = true" />
       <q-btn icon="add" color="green-8" round flat @click="openCreate" />
     </div>
 
@@ -208,6 +210,15 @@
         </q-card-actions>
       </q-card>
     </q-dialog>
+    <ExcelImportDialog
+      v-model="importDialog"
+      title="Загрузка реестра из Excel"
+      hint="Колонки «№ участка» и «ФИО» обязательны; соток, телефон, доп. телефон, email и «Сособственник» — по желанию. Повторная загрузка ничего не задвоит."
+      endpoint="/members/import/"
+      template-endpoint="/members/import-template/"
+      template-name="Шаблон — реестр членов.xlsx"
+      @done="load"
+    />
   </q-page>
 </template>
 
@@ -216,11 +227,13 @@ import { ref, watch, onMounted } from 'vue'
 import { useQuasar } from 'quasar'
 import api from 'src/api/client'
 import { useAuthStore } from 'stores/auth'
+import ExcelImportDialog from 'components/ExcelImportDialog.vue'
 
 const $q = useQuasar()
 const auth = useAuthStore()
 const members = ref([])
 const loading = ref(false)
+const importDialog = ref(false)
 const saving = ref(false)
 const deleting = ref(false)
 const page = ref(1)

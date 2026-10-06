@@ -11,6 +11,8 @@ from .serializers import (
     CalculateElectricitySerializer, MeterOpeningSerializer, apply_opening,
 )
 from .services import calculate_electricity
+from core.xlsx import import_response, template_response
+from . import importing
 import dataclasses
 
 
@@ -57,6 +59,27 @@ class MeterViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
                       on_date=d.get("initial_date") or timezone.localdate(),
                       debt=d.get("opening_debt"))
         return Response(MeterSerializer(meter).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"], url_path="import",
+            permission_classes=[IsTreasurer])
+    def import_xlsx(self, request):
+        """
+        Загрузить счётчики и показания из Excel. dry_run=true (по
+        умолчанию) — только проверить и показать отчёт.
+        """
+        org = require_org(request)
+        return import_response(
+            request, importing.COLUMNS, importing.REQUIRED,
+            lambda rows: importing.import_meters(org, rows, request.user))
+
+    @action(detail=False, methods=["get"], url_path="import-template",
+            permission_classes=[IsTreasurer])
+    def import_template(self, request):
+        """Шаблон Excel для загрузки счётчиков и показаний."""
+        return template_response("Шаблон — счётчики и показания.xlsx",
+                                 importing.TEMPLATE_HEADER,
+                                 importing.template_examples(),
+                                 importing.TEMPLATE_NOTES)
 
     @action(detail=False, methods=["post"], permission_classes=[IsTreasurer])
     def calculate(self, request):

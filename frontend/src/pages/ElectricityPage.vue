@@ -12,6 +12,8 @@
       <!-- Счётчики -->
       <q-tab-panel name="meters" class="q-pa-none">
         <q-btn outline color="orange-8" icon="add" label="Добавить счётчик" class="q-mb-md" @click="openNewMeter" />
+        <q-btn outline color="orange-8" icon="upload_file" label="Загрузить из Excel" class="q-mb-md q-ml-sm"
+               @click="importDialog = true" />
         <q-list separator bordered rounded>
           <q-item v-for="m in meters" :key="m.id">
             <q-item-section avatar>
@@ -125,6 +127,15 @@
         </q-card-actions>
       </q-card>
     </q-dialog>
+    <ExcelImportDialog
+      v-model="importDialog"
+      title="Счётчики и показания из Excel"
+      hint="Одна строка — счётчик и его показание; для истории повторите счётчик с разными датами. Участки должны уже быть в реестре. «Долг за свет» вносится только для нового счётчика."
+      endpoint="/electricity/meters/import/"
+      template-endpoint="/electricity/meters/import-template/"
+      template-name="Шаблон — счётчики и показания.xlsx"
+      @done="load"
+    />
   </q-page>
 </template>
 
@@ -132,6 +143,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useQuasar } from 'quasar'
 import api from 'src/api/client'
+import ExcelImportDialog from 'components/ExcelImportDialog.vue'
 
 const $q = useQuasar()
 const tab = ref('meters')
@@ -141,6 +153,7 @@ const tariffs = ref([])
 const plotOptions = ref([])
 const meterDialog = ref(false)
 const tariffDialog = ref(false)
+const importDialog = ref(false)
 const saving = ref(false)
 const calculating = ref(false)
 const readingMonth = ref(new Date().toISOString().slice(0, 7))
