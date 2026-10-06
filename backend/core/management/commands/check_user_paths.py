@@ -422,6 +422,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("МАСТЕР НОВОГО САДОВОДСТВА"))
         self._check_snt_setup(c, AD, CH, ME)
 
+        # ---------------- Смета, исполнение, выгрузка для бухгалтера ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("СМЕТА И ВЫГРУЗКА ДЛЯ БУХГАЛТЕРА"))
+        self._check_budget(c, AD, TR, ME)
+
         # ---------------- Новый счётчик: показание и долг ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("НОВЫЙ СЧЁТЧИК: ПОКАЗАНИЕ И ДОЛГ"))
         self._check_meter_opening(c, CH, ME)
@@ -1647,6 +1651,183 @@ class Command(BaseCommand):
                     r.status_code == 204 and not org.logo
                     and not default_storage.exists(last),
                     f"HTTP {r.status_code}")
+
+    def _check_budget(self, c, admin_headers, treasurer_headers, member_headers):
+        """
+        Смета → размер взноса (поровну и по соткам, округление вверх) →
+        утверждение → начисление по смете → расходы и исполнение →
+        документы → ведомость и выгрузка для бухгалтера.
+        Всё — в отдельном СНТ из мастера: база взноса известна точно.
+        """
+        import io
+        import json as _json
+        from decimal import Decimal
+
+        import openpyxl
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from billing.credits import add_credit
+        from billing.models import Charge, Receipt
+        from members.models import Plot
+        from organizations.models import Organization
+
+        r = c.post("/api/organizations/setup/", data=_json.dumps({
+            "organization": {"name": "СНТ «Проверка сметы»"},
+            "chairman": {"last_name": "Сметов", "first_name": "Пётр"},
+        }), content_type="application/json", **admin_headers)
+        org = Organization.objects.filter(name="СНТ «Проверка сметы»").first()
+        if r.status_code != 201 or org is None:
+            self.verify("смета: тестовое СНТ создано", False, f"HTTP {r.status_code}")
+            return
+        H = dict(admin_headers, HTTP_X_ORG_ID=str(org.pk))
+        wb = openpyxl.Workbook()
+        for row in (["№ участка", "ФИО", "Соток"], ["1", "Сметов Пётр", 6],
+                    ["2", "Расходова Анна", 8], ["3", "Доходов Иван", 10]):
+            wb.active.append(row)
+        buf = io.BytesIO()
+        wb.save(buf)
+        c.post("/api/members/import/", data={"file": SimpleUploadedFile("r.xlsx", buf.getvalue()),
+                                             "dry_run": "false"}, **H)
+
+        def post(url, body, headers=H):
+            return c.post(url, data=_json.dumps(body), content_type="application/json",
+                          **headers)
+
+        def patch(url, body, headers=H):
+            return c.patch(url, data=_json.dumps(body), content_type="application/json",
+                           **headers)
+
+        r = post("/api/budgets/", {"year": 2027})
+        bid = (self._json(r) or {}).get("id")
+        self.verify("смета: создана на год", r.status_code == 201 and bid, f"HTTP {r.status_code}")
+        if not bid:
+            return
+        r1 = post("/api/budget-items/", {"budget": bid, "name": "Охрана", "quantity": "12",
+                                         "unit": "мес", "unit_price": "15000",
+                                         "justification": "Договор с ЧОП"})
+        r2 = post("/api/budget-items/", {"budget": bid, "name": "Вывоз ТКО", "amount": "60000.01"})
+        r3 = post("/api/budget-items/", {"budget": bid, "name": "Ремонт дороги",
+                                         "section": "target", "amount": "30000"})
+        guard_id = (self._json(r1) or {}).get("id")
+        self.verify("смета: статья «количество × цена» считается сама",
+                    r1.status_code == 201 and (self._json(r1) or {}).get("amount") == "180000.00"
+                    and r2.status_code == 201 and r3.status_code == 201,
+                    f"{r1.status_code} {self._json(r1)}")
+        calc = (self._json(c.get(f"/api/budgets/{bid}/", **H)) or {}).get("calc") or {}
+        self.verify("смета: взнос поровну — сумма ÷ участки, округление вверх до копейки",
+                    calc.get("plots") == 3 and calc.get("rate") == "80000.01"
+                    and calc.get("membership_total") == "240000.01"
+                    and calc.get("rounding_surplus") == "0.02",
+                    calc)
+        self.verify("смета: целевой — сумма ÷ участки",
+                    (calc.get("targets") or [{}])[0].get("per_plot") == "10000.00",
+                    calc.get("targets"))
+        r = patch(f"/api/budgets/{bid}/", {"basis": "per_sotka"})
+        calc = (self._json(r) or {}).get("calc") or {}
+        self.verify("смета: по соткам — сумма ÷ общая площадь (24 сотки)",
+                    r.status_code == 200 and calc.get("area") == "24.00"
+                    and calc.get("rate") == "10000.01",
+                    calc)
+
+        r = post(f"/api/budgets/{bid}/charge-membership/", {})
+        self.verify("смета: до утверждения взнос по ней не начисляется", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+        r = post(f"/api/budgets/{bid}/approve/", {"approved_at": "2027-04-20"},
+                 headers=dict(treasurer_headers, HTTP_X_ORG_ID=str(org.pk)))
+        self.verify("смета: утверждение отмечает только председатель", r.status_code == 403,
+                    f"HTTP {r.status_code}")
+        r = post(f"/api/budgets/{bid}/approve/", {"approved_at": "2027-04-20",
+                                                  "protocol_number": "1"})
+        self.verify("смета: утверждена с датой собрания и протоколом",
+                    r.status_code == 200 and (self._json(r) or {}).get("status") == "approved",
+                    f"HTTP {r.status_code}")
+        r = patch(f"/api/budget-items/{guard_id}/", {"amount": "1"})
+        r2 = post("/api/budget-items/", {"budget": bid, "name": "Лишняя", "amount": "1"})
+        r3 = c.delete(f"/api/budgets/{bid}/", **H)
+        self.verify("смета: утверждённую не правят и не удаляют",
+                    r.status_code == 400 and r2.status_code == 400 and r3.status_code == 400,
+                    f"{r.status_code} {r2.status_code} {r3.status_code}")
+
+        plot2 = Plot.objects.get(organization=org, number="2")
+        add_credit(plot2, amount=Decimal("5000.00"), date=plot2.created_at.date(),
+                   organization=org, notes="проверка")
+        r = post(f"/api/budgets/{bid}/charge-membership/", {"due_date": "2027-07-01"})
+        data = self._json(r) or {}
+        p1 = Charge.objects.filter(organization=org, plot__number="1",
+                                   charge_type__category="membership").first()
+        self.verify("смета: членский начислен по смете — ставка × площадь, со сроком",
+                    r.status_code == 200 and data.get("created") == 3 and p1 is not None
+                    and p1.amount == Decimal("60000.06") and str(p1.due_date) == "2027-07-01"
+                    and "протокол № 1" in p1.description,
+                    f"HTTP {r.status_code}, {data}")
+        r = post(f"/api/budgets/{bid}/charge-membership/", {})
+        self.verify("смета: повторное начисление не задваивает",
+                    (self._json(r) or {}).get("created") == 0, self._json(r))
+
+        r = post("/api/expenses/", {"date": "2027-01-31", "amount": "15000",
+                                    "item": guard_id, "counterparty": "ЧОП", "document": "акт 1"})
+        r2 = post("/api/expenses/", {"date": "2026-12-31", "amount": "100", "item": guard_id})
+        self.verify("расходы: записан; статья сметы другого года — отказ",
+                    r.status_code == 201 and r2.status_code == 400,
+                    f"{r.status_code} {r2.status_code}")
+        ex = self._json(c.get(f"/api/budgets/{bid}/execution/", **H)) or {}
+        guard = next((x for x in ex.get("rows", []) if x["id"] == guard_id), {})
+        memb = next((x for x in ex.get("income", []) if x["category"] == "membership"), {})
+        self.verify("исполнение: план/факт по статье и начислено по членским",
+                    guard.get("fact") == "15000.00" and guard.get("plan") == "180000.00"
+                    and memb.get("charged") == "240000.24",
+                    f"{guard} {memb}")
+        for kind, marker in (("smeta", "ПРИХОДНО-РАСХОДНАЯ СМЕТА"),
+                             ("feo", "ФИНАНСОВО-ЭКОНОМИЧЕСКОЕ ОБОСНОВАНИЕ"),
+                             ("execution", "ОБ ИСПОЛНЕНИИ")):
+            r = c.get(f"/api/budgets/{bid}/document/{kind}/", **H)
+            text = ""
+            if r.status_code == 200:
+                ws = openpyxl.load_workbook(io.BytesIO(r.content)).active
+                text = " ".join(str(v) for row in ws.iter_rows(values_only=True)
+                                for v in row if v)
+            self.verify(f"документ «{kind}» скачивается и оформлен",
+                        marker in text and ("протокол № 1" in text or kind == "execution"),
+                        f"HTTP {r.status_code}")
+
+        r = post("/api/budgets/", {"year": 2028, "copy_from": 2027})
+        nb = self._json(r) or {}
+        self.verify("смета: на следующий год — копией прошлогодней, черновиком",
+                    r.status_code == 201 and len(nb.get("items", [])) == 3
+                    and nb.get("status") == "draft", f"HTTP {r.status_code}")
+
+        r = c.post("/api/billing/payments/receive/", data={
+            "plot": Plot.objects.get(organization=org, number="1").pk, "amount": "70000",
+            "date": "2027-02-01", "method": "cash", "for": "membership"},
+            content_type="application/json", **H)
+        rec = Receipt.objects.filter(organization=org).first()
+        self.verify("касса: приём записан одной строкой журнала поступлений, с разнесением",
+                    r.status_code == 201 and rec is not None and rec.amount == Decimal("70000")
+                    and "Членский" in rec.allocation and "аванс" in rec.allocation,
+                    f"HTTP {r.status_code}, {rec and rec.allocation}")
+        r = c.get("/api/reports/accounting/?date_from=2026-01-01&date_to=2027-12-31", **H)
+        sheets = {}
+        if r.status_code == 200:
+            book = openpyxl.load_workbook(io.BytesIO(r.content))
+            sheets = {ws.title: list(ws.iter_rows(values_only=True)) for ws in book}
+        income = sheets.get("Поступления", [])
+        total = next((row[4] for row in income if row and row[0] == "Итого"), None)
+        self.verify("бухгалтеру: в поступлениях только живые деньги (зачёт аванса не задваивает)",
+                    total == 70000, f"итого {total}")
+        self.verify("бухгалтеру: листы начислений, расходов и сальдо по участкам",
+                    {"Начисления", "Расходы", "Сальдо по участкам"} <= set(sheets)
+                    and any(row and row[0] == "1" for row in sheets.get("Сальдо по участкам", [])),
+                    list(sheets))
+        r = c.get("/api/reports/revision/?year=2027", **H)
+        self.verify("ревизионной комиссии: ведомость за год скачивается",
+                    r.status_code == 200 and r.content[:4] == b"PK\x03\x04",
+                    f"HTTP {r.status_code}")
+        r = c.get("/api/budgets/", **member_headers)
+        r2 = c.get("/api/reports/accounting/?date_from=2027-01-01&date_to=2027-12-31",
+                   **member_headers)
+        self.verify("смета и выгрузка: рядовому члену закрыты",
+                    r.status_code == 403 and r2.status_code == 403,
+                    f"{r.status_code} {r2.status_code}")
 
     def _check_snt_setup(self, c, admin_headers, chairman_headers, member_headers):
         """

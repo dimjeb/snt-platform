@@ -417,3 +417,42 @@ class PlotCredit(OrgModel):
     def __str__(self):
         sign = "+" if self.amount >= 0 else ""
         return f"{self.plot} {self.date}: {sign}{self.amount} ₽"
+
+
+class Receipt(OrgModel):
+    """
+    Поступление, принятое казначеем: одна строка — одни деньги.
+
+    Принятая сумма расходится по начислениям и авансу несколькими
+    записями (Payment, PlotCredit), и по ним уже не восстановить, что
+    пришло одним платежом. Бухгалтеру нужен именно приход — как приходный
+    кассовый ордер: дата, от кого, сколько, за что. Его и хранит эта
+    запись; разнесённые оплаты ссылаются на неё через
+    Payment.external_ref = "receipt-<id>".
+
+    Банковские поступления сюда не пишутся: их приход — строка выписки
+    (BankTransaction).
+    """
+
+    plot = models.ForeignKey(
+        "members.Plot", on_delete=models.PROTECT, related_name="receipts",
+        verbose_name="Участок",
+    )
+    date = models.DateField("Дата")
+    amount = models.DecimalField("Сумма", max_digits=12, decimal_places=2)
+    method = models.CharField("Способ", max_length=10,
+                              choices=Payment.METHOD_CHOICES)
+    note = models.CharField("Примечание", max_length=500, blank=True)
+    allocation = models.TextField("Куда разнесено", blank=True)
+    recorded_by = models.ForeignKey(
+        "accounts.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+", verbose_name="Принял",
+    )
+
+    class Meta:
+        verbose_name = "Поступление (касса)"
+        verbose_name_plural = "Поступления (касса)"
+        ordering = ["-date", "-pk"]
+
+    def __str__(self):
+        return f"{self.date} уч.{self.plot.number}: {self.amount}"

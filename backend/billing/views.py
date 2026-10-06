@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from core.permissions import (
     IsTreasurer, OrgQuerysetMixin, require_org,
 )
-from .models import ChargeType, BillingPeriod, Charge, Payment
+from .models import ChargeType, BillingPeriod, Charge, Payment, Receipt
 from .serializers import (
     ChargeTypeSerializer, BillingPeriodSerializer, ChargeSerializer,
     PaymentSerializer, BulkMembershipChargeSerializer, BulkTargetChargeSerializer,
@@ -350,6 +350,10 @@ class PaymentViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
         note = str(data.get("note") or "")[:500]
         label = dict(Payment.METHOD_CHOICES).get(method, method)
         with transaction.atomic():
+            receipt = Receipt.objects.create(
+                organization=org, plot=plot, date=when, amount=amount,
+                method=method, note=note, recorded_by=request.user,
+            )
             done = allocate(
                 plot, amount, date=when, category=category, charge=charge,
                 credit_notes=f"{label.lower()} {when:%d.%m.%Y}",
@@ -357,8 +361,16 @@ class PaymentViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
                     "method": method,
                     "notes": note or f"Принято казначеем: {label.lower()}",
                     "recorded_by": request.user,
+                    "external_ref": f"receipt-{receipt.pk}",
                 },
             )
+            parts = [f"{c.charge_type.name} {c.period} — {a:.2f}" for c, a in done.paid]
+            parts += [f"аванс «{CATEGORY_LABELS.get(k, k)}» — {v:.2f}"
+                      for k, v in done.earmarked.items()]
+            if done.advance:
+                parts.append(f"аванс — {done.advance:.2f}")
+            receipt.allocation = "; ".join(parts)
+            receipt.save(update_fields=["allocation", "updated_at"])
         return Response({
             "paid": [{"charge": c.pk, "name": c.charge_type.name,
                       "period": str(c.period), "amount": a} for c, a in done.paid],
