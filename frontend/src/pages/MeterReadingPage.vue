@@ -77,7 +77,7 @@
             <q-item-label caption>{{ r.value }} кВт·ч{{ r.value_night ? ' / ' + r.value_night + ' (ночь)' : '' }}</q-item-label>
           </q-item-section>
           <q-item-section side>
-            <q-icon v-if="r.photo" name="photo" color="grey-5" />
+            <q-icon v-if="r.has_photo" name="photo" color="grey-5" />
           </q-item-section>
         </q-item>
       </q-list>

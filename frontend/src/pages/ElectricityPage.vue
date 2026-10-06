@@ -48,6 +48,11 @@
               <q-item-label>Сч. {{ r.meter_serial }} · Уч. {{ r.plot_number || '—' }}</q-item-label>
               <q-item-label caption>{{ r.date }}: {{ r.value }} кВт·ч{{ r.value_night ? ' / ' + r.value_night + ' (ночь)' : '' }}</q-item-label>
             </q-item-section>
+            <q-item-section v-if="r.has_photo" side>
+              <q-btn flat dense round icon="photo" color="grey-7" @click="openPhoto(r)">
+                <q-tooltip>Фото показания</q-tooltip>
+              </q-btn>
+            </q-item-section>
           </q-item>
           <q-item v-if="!readings.length"><q-item-section class="text-center text-grey-6">Нет показаний</q-item-section></q-item>
         </q-list>
@@ -243,6 +248,19 @@ async function calculate() {
     $q.notify({ type: 'negative', message: e.response?.data?.detail || 'Ошибка расчёта' })
   } finally {
     calculating.value = false
+  }
+}
+
+// Фото лежит в закрытом хранилище: забираем с токеном и показываем
+// из памяти браузера, прямой ссылки на файл нет.
+async function openPhoto(r) {
+  try {
+    const { data } = await api.get(r.photo_url, { responseType: 'blob' })
+    const url = URL.createObjectURL(data)
+    window.open(url, '_blank')
+    setTimeout(() => URL.revokeObjectURL(url), 60000)
+  } catch {
+    $q.notify({ type: 'negative', message: 'Фото не открылось' })
   }
 }
 

@@ -1,1 +1,0 @@
-import{K as e,U as t}from"./index-CKnn2gzG.js";var n=e(({app:e})=>{e.use(t())});export{n as default};

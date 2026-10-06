@@ -75,7 +75,9 @@ class MeterReading(OrgModel):
         related_name="submitted_readings",
     )
     photo = models.ImageField(
-        "Фото показания", upload_to="meter_photos/", null=True, blank=True
+        "Фото показания", upload_to="private/meter_photos/", null=True, blank=True,
+        help_text="Лежит в закрытой части хранилища: на фото бывает адрес и "
+                  "лицо; отдаётся только через API с проверкой прав.",
     )
     notes = models.CharField("Примечание", max_length=200, blank=True)
     is_estimated = models.BooleanField(
