@@ -60,6 +60,31 @@ class User(AbstractUser):
     def __str__(self):
         return f"{self.get_full_name() or self.username} ({self.get_role_display()})"
 
+    def normalize_role(self):
+        """
+        Роль «суперадмин» и флаг is_superuser — одно и то же, и должны
+        совпадать. Права платформы проверяются по флагу, а интерфейс и часть
+        прав СНТ — по роли. Когда они расходились (флаг сняли в админке,
+        роль осталась), человек видел меню администратора платформы, а
+        сервер ему же отказывал.
+
+        Сняли флаг — роль администратора уходит: учётка, привязанная к СНТ,
+        остаётся председателем этого СНТ (так это и бывает: администратор
+        был ещё и председателем), не привязанная — рядовой.
+        """
+        if self.is_superuser:
+            self.role = self.ROLE_SUPERADMIN
+        elif self.role == self.ROLE_SUPERADMIN:
+            self.role = self.ROLE_CHAIRMAN if self.organization_id else self.ROLE_MEMBER
+
+    def save(self, *args, **kwargs):
+        before = self.role
+        self.normalize_role()
+        fields = kwargs.get("update_fields")
+        if fields is not None and self.role != before and "role" not in fields:
+            kwargs["update_fields"] = list(fields) + ["role"]
+        super().save(*args, **kwargs)
+
     @property
     def is_chairman(self):
         return self.role in (self.ROLE_CHAIRMAN, self.ROLE_SUPERADMIN)
