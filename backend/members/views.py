@@ -11,6 +11,8 @@ from core.models import AccessLog
 from core.permissions import (
     IsChairman, IsTreasurer, IsOrgMember, OrgQuerysetMixin, require_org,
 )
+from core.xlsx import import_response, template_response
+from . import importing
 from .models import Member, Plot, PlotOwnership
 from .serializers import (
     MemberSerializer,
@@ -108,6 +110,29 @@ class MemberViewSet(AccessLoggedMixin, OrgQuerysetMixin, viewsets.ModelViewSet):
             "full_name": member.full_name,
             "plots": [p.number for p in member.plots],
         })
+
+    @action(detail=False, methods=["post"], url_path="import")
+    def import_xlsx(self, request):
+        """
+        Загрузить реестр из Excel. dry_run=true (по умолчанию) — только
+        проверить и показать отчёт, ничего не записывая.
+        """
+        org = require_org(request)
+        response = import_response(
+            request, importing.COLUMNS, importing.REQUIRED,
+            lambda rows: importing.import_members(org, rows))
+        if not response.data["dry_run"]:
+            record_access(request, "загрузка реестра из Excel",
+                          AccessLog.ACTION_DETAIL, records=response.data["rows"])
+        return response
+
+    @action(detail=False, methods=["get"], url_path="import-template")
+    def import_template(self, request):
+        """Шаблон Excel для загрузки реестра."""
+        return template_response("Шаблон — реестр членов.xlsx",
+                                 importing.TEMPLATE_HEADER,
+                                 importing.TEMPLATE_EXAMPLES,
+                                 importing.TEMPLATE_NOTES)
 
     @action(detail=False, methods=["get"], url_path="short")
     def short(self, request):

@@ -436,6 +436,65 @@ with sync_playwright() as pw:
     verify("подписи под логотипом нет",
            page.locator(".snt-drawer-logo").inner_text().strip() == "", "")
 
+    # 9в. Загрузка из Excel: реестр, затем счётчики с показаниями.
+    import openpyxl as _openpyxl
+
+    def _xlsx(rows):
+        wb = _openpyxl.Workbook()
+        for r in rows:
+            wb.active.append(r)
+        b = _io.BytesIO()
+        wb.save(b)
+        return b.getvalue()
+
+    def _excel_upload(content, name):
+        page.locator(".q-dialog input[type=file]").set_input_files(
+            {"name": name, "mimeType":
+             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+             "buffer": content})
+        page.wait_for_timeout(400)
+        page.get_by_role("button", name="Проверить").click()
+        page.wait_for_timeout(1500)
+        checked = page.locator(".q-dialog").inner_text()
+        page.get_by_role("button", name="Загрузить", exact=True).click()
+        page.wait_for_timeout(1500)
+        return checked, page.locator(".q-dialog").inner_text()
+
+    page.goto(f"{BASE}/members", wait_until="networkidle")
+    page.wait_for_timeout(1200)
+    page.get_by_role("button", name="Загрузить из Excel").click()
+    page.wait_for_timeout(500)
+    checked, loaded = _excel_upload(_xlsx([
+        ["№ участка", "ФИО", "Соток"],
+        ["Б-77", "Экселев Пётр Ильич", 7],
+        ["Б-78", "Таблицына Ольга", "5,5"],
+    ]), "reestr.xlsx")
+    verify("реестр из Excel: «Проверить» показывает, что будет, ничего не записав",
+           "Проверка: строк с данными — 2" in checked and "Члены: новые" in checked,
+           checked[:200])
+    verify("реестр из Excel: «Загрузить» записал",
+           "Загружено: строк с данными — 2" in loaded, loaded[:200])
+    page.get_by_role("button", name="Закрыть").click()
+    page.wait_for_timeout(1000)
+    verify("загруженный член появился в списке",
+           "Экселев" in body_text(page), "")
+
+    page.goto(f"{BASE}/electricity", wait_until="networkidle")
+    page.wait_for_timeout(1200)
+    page.get_by_role("button", name="Загрузить из Excel").click()
+    page.wait_for_timeout(500)
+    checked, loaded = _excel_upload(_xlsx([
+        ["Участок", "Номер счётчика", "Дата", "Показание"],
+        ["Б-77", "XL-777", "01.09.2026", 4200],
+        ["Б-77", "XL-777", "01.10.2026", 4350],
+    ]), "meters.xlsx")
+    verify("счётчики из Excel: проверка и загрузка — 1 счётчик, 2 показания",
+           "Счётчики: новые" in checked and "Загружено: строк с данными — 2" in loaded,
+           loaded[:200])
+    page.get_by_role("button", name="Закрыть").click()
+    page.wait_for_timeout(1000)
+    verify("загруженный счётчик появился в списке", "XL-777" in body_text(page), "")
+
     # 10. Оплата с телефона: камерой свой экран не отсканировать, поэтому
     #     QR сохраняется в галерею, а реквизиты копируются по одному.
     phone = browser.new_context(

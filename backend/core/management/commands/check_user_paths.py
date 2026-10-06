@@ -414,6 +414,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("ЛОГОТИП ТОВАРИЩЕСТВА"))
         self._check_org_logo(c, CH, ME)
 
+        # ---------------- Загрузка из Excel ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("ЗАГРУЗКА ИЗ EXCEL"))
+        self._check_excel_import(c, CH, ME)
+
         # ---------------- Новый счётчик: показание и долг ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("НОВЫЙ СЧЁТЧИК: ПОКАЗАНИЕ И ДОЛГ"))
         self._check_meter_opening(c, CH, ME)
@@ -1638,6 +1642,163 @@ class Command(BaseCommand):
         self.verify("логотип убирается вместе с файлом",
                     r.status_code == 204 and not org.logo
                     and not default_storage.exists(last),
+                    f"HTTP {r.status_code}")
+
+    def _check_excel_import(self, c, chairman_headers, member_headers):
+        """
+        Реестр и счётчики с показаниями — кнопкой «Загрузить из Excel».
+
+        Проверка («Проверить») идёт тем же кодом, что и запись, и
+        откатывается; повторная загрузка того же файла ничего не задваивает.
+        """
+        import datetime as dt
+        import io
+        from decimal import Decimal
+
+        import openpyxl
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from billing.models import Charge
+        from electricity.models import Meter, MeterReading
+        from members.models import Member, Plot, PlotOwnership
+
+        org = self._fixture_org
+
+        def xlsx(rows):
+            wb = openpyxl.Workbook()
+            for r in rows:
+                wb.active.append(r)
+            buf = io.BytesIO()
+            wb.save(buf)
+            return buf.getvalue()
+
+        def upload(url, content, dry, headers=chairman_headers, name="f.xlsx"):
+            return c.post(url, data={"file": SimpleUploadedFile(name, content),
+                                     "dry_run": "true" if dry else "false"},
+                          **headers)
+
+        # ── реестр ──
+        murl = "/api/members/import/"
+        reg = xlsx([
+            ["Реестр членов ТСН на 2033 год"],          # шапка над таблицей
+            [],
+            ["Примечание", "ФИО", "№ участка", "Площадь участка, сот",
+             "Телефон", "Доп. телефон", "Сособственник"],
+            ["", "Импортов Иван Иванович", "ИМП-1", "6,5", "89000000001", "", ""],
+            ["", "Импортова Анна Петровна", "ИМП-1", "6,5", "", "", "да"],
+            ["", "Однословов", "ИМП-2", 8, "", "", ""],
+            ["", "Безучасткова Ирина", "", "", "", "", ""],
+            ["", "", "ИМП-3", "", "", "", ""],
+            ["", "Захватов Пётр", "ИМП-1", "", "", "", ""],
+        ])
+        before = Member.objects.filter(organization=org).count()
+        r = upload(murl, reg, dry=True)
+        data = self._json(r) or {}
+        stats = dict(data.get("stats") or [])
+        self.verify("реестр: «Проверить» показывает отчёт и ничего не пишет",
+                    r.status_code == 200 and data.get("dry_run") is True
+                    and stats.get("Члены: новые") == 5
+                    and Member.objects.filter(organization=org).count() == before,
+                    f"HTTP {r.status_code}, {stats}")
+        issues = " | ".join(data.get("issues") or [])
+        self.verify("реестр: заголовок найден под шапкой, колонки — по названиям",
+                    stats.get("Участки: новые") == 2 and stats.get("Сособственники добавлены") == 1,
+                    stats)
+        self.verify("реестр: проблемные строки названы по номеру строки, без ФИО",
+                    "строка 8: нет ФИО" in issues and "строка 7: нет номера участка" in issues
+                    and "строка 6: в ФИО одно слово" in issues
+                    and "строка 9: участок ИМП-1 уже записан за другим" in issues
+                    and "Импортов" not in issues,
+                    issues)
+        r = upload(murl, reg, dry=False)
+        plot1 = Plot.objects.filter(organization=org, number="ИМП-1").first()
+        owners = PlotOwnership.objects.filter(plot=plot1, date_to__isnull=True).count() if plot1 else 0
+        self.verify("реестр: «Загрузить» записывает: участки, площадь, сособственник",
+                    r.status_code == 200 and plot1 is not None
+                    and plot1.area_sotok == Decimal("6.50") and owners == 2
+                    and Member.objects.filter(organization=org, last_name="Импортов",
+                                              phone="+7 (900) 000-00-01").exists(),
+                    f"HTTP {r.status_code}, владельцев {owners}")
+        after_first = Member.objects.filter(organization=org).count()
+        r = upload(murl, reg, dry=False)
+        stats = dict((self._json(r) or {}).get("stats") or [])
+        self.verify("реестр: повторная загрузка того же файла ничего не задваивает",
+                    Member.objects.filter(organization=org).count() == after_first
+                    and stats.get("Члены: новые") == 0 and stats.get("Владения записаны") == 0,
+                    stats)
+
+        r = c.get("/api/members/import-template/", **chairman_headers)
+        wb = openpyxl.load_workbook(io.BytesIO(r.content)) if r.status_code == 200 else None
+        self.verify("реестр: шаблон скачивается и в нём подписаны колонки",
+                    wb is not None and wb.active["A1"].value == "№ участка"
+                    and "Пояснения" in wb.sheetnames,
+                    f"HTTP {r.status_code}")
+        r = upload(murl, reg, dry=True, headers=member_headers)
+        self.verify("реестр: рядовой член загрузить не может", r.status_code == 403,
+                    f"HTTP {r.status_code}")
+        r = upload(murl, "ФИО;участок\nИванов;1".encode(), dry=True, name="r.csv")
+        self.verify("реестр: не .xlsx — понятный отказ",
+                    r.status_code == 400 and ".xlsx" in str(self._json(r)),
+                    f"HTTP {r.status_code}")
+        r = upload(murl, xlsx([["Фамилия", "Улица"], ["Иванов", "Лесная"]]), dry=True)
+        self.verify("реестр: нет нужных колонок — отказ с подсказкой",
+                    r.status_code == 400 and "заголовк" in str(self._json(r)),
+                    f"HTTP {r.status_code}, {self._json(r)}")
+
+        # ── счётчики и показания ──
+        eurl = "/api/electricity/meters/import/"
+        met = xlsx([
+            ["Участок", "Номер счётчика", "Дата", "Показание", "Показание ночь",
+             "Главный", "Долг за свет, ₽"],
+            ["ИМП-1", "IMP-001", "01.05.2033", 1000, "", "", "500"],
+            ["ИМП-1", "IMP-001", dt.datetime(2033, 6, 1), 1100, "", "", ""],
+            ["ИМП-1", "IMP-001", "01.06.2033", 1200, "", "", ""],
+            ["ИМП-1", "IMP-001", "15.05.2033", 900, "", "", ""],
+            ["ИМП-2", "IMP-002", "", "", "", "", ""],
+            ["НЕТ-ТАКОГО", "X-1", "01.05.2033", 5, "", "", ""],
+            ["ИМП-2", "IMP-001", "01.05.2033", 5, "", "", ""],
+            ["ИМП-1", "IMP-001", "", "", "", "", "300"],
+            ["ИМП-2", "IMP-002", "32.13.2033", 5, "", "", ""],
+        ])
+        r = upload(eurl, met, dry=True)
+        data = self._json(r) or {}
+        stats = dict(data.get("stats") or [])
+        self.verify("счётчики: «Проверить» показывает отчёт и ничего не пишет",
+                    r.status_code == 200 and stats.get("Счётчики: новые") == 2
+                    and stats.get("Показания: добавлены") == 2
+                    and not Meter.objects.filter(organization=org, serial_number="IMP-001").exists(),
+                    f"HTTP {r.status_code}, {stats}")
+        issues = " | ".join(data.get("issues") or [])
+        self.verify("счётчики: спорные строки не записаны и названы",
+                    "строка 4: на 01.06.2033 у счётчика уже есть другое показание" in issues
+                    and "строка 5: показание меньше предыдущего" in issues
+                    and "строка 7: участка НЕТ-ТАКОГО нет в реестре" in issues
+                    and "строка 8: счётчик IMP-001 уже числится за другим местом" in issues
+                    and "строка 9: долг этому счётчику уже внесён" in issues
+                    and "строка 10: дата «32.13.2033» не распознана" in issues,
+                    issues)
+        r = upload(eurl, met, dry=False)
+        m1 = Meter.objects.filter(organization=org, serial_number="IMP-001").first()
+        debt = Charge.objects.filter(plot=plot1, period__year=2033,
+                                     period__month__isnull=True,
+                                     charge_type__category="electricity")
+        self.verify("счётчики: записаны счётчики, история показаний и долг за свет",
+                    r.status_code == 200 and m1 is not None and m1.plot_id == plot1.id
+                    and list(MeterReading.objects.filter(meter=m1).order_by("date")
+                             .values_list("value", flat=True)) == [Decimal("1000"), Decimal("1100")]
+                    and debt.count() == 1 and debt.first().amount == Decimal("500"),
+                    f"HTTP {r.status_code}, долгов {debt.count()}")
+        r = upload(eurl, met, dry=False)
+        stats = dict((self._json(r) or {}).get("stats") or [])
+        self.verify("счётчики: повторная загрузка не задваивает ни показания, ни долг",
+                    stats.get("Счётчики: новые") == 0 and stats.get("Счётчики: уже были") == 2
+                    and stats.get("Показания: уже были") == 2 and debt.count() == 1,
+                    stats)
+        r = c.get("/api/electricity/meters/import-template/", **chairman_headers)
+        self.verify("счётчики: шаблон скачивается", r.status_code == 200
+                    and r.content[:4] == b"PK\x03\x04", f"HTTP {r.status_code}")
+        r = upload(eurl, met, dry=True, headers=member_headers)
+        self.verify("счётчики: рядовой член загрузить не может", r.status_code == 403,
                     f"HTTP {r.status_code}")
 
     def _check_meter_opening(self, c, chairman_headers, member_headers):
