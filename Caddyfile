@@ -18,6 +18,11 @@
         root * /srv
         file_server
     }
+    # Закрытая часть хранилища (фото показаний): наружу не отдаётся
+    # никогда, только через API с проверкой прав.
+    handle /media/private/* {
+        respond 404
+    }
     handle /media/* {
         root * /srv
         file_server

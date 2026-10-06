@@ -411,6 +411,25 @@ class BankStatementViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
             return qs.annotate(rows_count=Count("transactions"))
         return qs
 
+    def perform_destroy(self, instance):
+        """
+        Проведённую выписку удалить нельзя.
+
+        Удаление уносит строки выписки, а созданные по ним платежи
+        остаются (ссылка на строку обнуляется). Повторная загрузка того же
+        файла заводит строки заново, и при проведении деньги легли бы
+        второй раз — защита от дублей по уникальности строк срабатывает,
+        только пока старые строки существуют.
+        """
+        from rest_framework.exceptions import ValidationError
+
+        if instance.transactions.filter(status=BankTransaction.STATUS_APPLIED).exists():
+            raise ValidationError(
+                "Выписка уже проведена — удалить её нельзя: деньги по ней разнесены, "
+                "и после повторной загрузки они легли бы второй раз. Ошибочную строку "
+                "исправьте переносом оплаты между начислениями.")
+        instance.delete()
+
     def create(self, request, *args, **kwargs):
         """Загрузить файл выписки. Разбирает и сопоставляет, но не проводит."""
         upload = request.FILES.get("file")

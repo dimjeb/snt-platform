@@ -197,6 +197,19 @@ class MeterReadingSerializer(serializers.ModelSerializer):
         source="meter.plot.number", read_only=True, default=None
     )
 
+    # Файл только принимается; наружу — признак и адрес в API с проверкой
+    # прав, а не путь в открытой /media/.
+    photo = serializers.ImageField(write_only=True, required=False, allow_null=True)
+    has_photo = serializers.SerializerMethodField()
+    photo_url = serializers.SerializerMethodField()
+
+    def get_has_photo(self, obj):
+        return bool(obj.photo)
+
+    def get_photo_url(self, obj):
+        # Путь относительно /api — как у всех запросов фронта.
+        return f"/electricity/readings/{obj.pk}/photo/" if obj.photo else None
+
     class Meta:
         model = MeterReading
         exclude = ("organization",)
@@ -206,7 +219,15 @@ class MeterReadingSerializer(serializers.ModelSerializer):
                             "is_estimated")
 
     def validate_meter(self, meter):
-        return _check_same_org(meter, self.context.get("request"), "Счётчик")
+        request = self.context.get("request")
+        _check_same_org(meter, request, "Счётчик")
+        user = getattr(request, "user", None)
+        if user is not None and user.is_authenticated:
+            from .views import own_meter_q, own_meters_only
+            if own_meters_only(user) and not Meter.objects.filter(
+                    own_meter_q(user), pk=meter.pk).exists():
+                raise serializers.ValidationError("Счётчик не найден.")
+        return meter
 
 
 class CalculateElectricitySerializer(serializers.Serializer):

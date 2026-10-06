@@ -16,6 +16,25 @@ from . import importing
 import dataclasses
 
 
+def own_meters_only(user):
+    """
+    Рядовой член видит и трогает только счётчики своих участков.
+
+    Председатель и казначей ведут всё СНТ. Раньше член получал список всех
+    показаний товарищества и мог сдать показание по чужому счётчику.
+    """
+    return not (user.is_superuser or user.is_treasurer)
+
+
+def own_meter_q(user, prefix=""):
+    from django.db.models import Q
+
+    if not user.member_id:
+        return Q(pk__in=[])
+    return Q(**{f"{prefix}plot__ownerships__member_id": user.member_id,
+                f"{prefix}plot__ownerships__date_to__isnull": True})
+
+
 class EnergyTariffViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     queryset = EnergyTariff.objects.all()
     serializer_class = EnergyTariffSerializer
@@ -29,6 +48,12 @@ class MeterViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     queryset = Meter.objects.select_related("plot")
     serializer_class = MeterSerializer
     filterset_fields = ["is_main", "plot"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if own_meters_only(self.request.user):
+            qs = qs.filter(own_meter_q(self.request.user)).distinct()
+        return qs
 
     def get_permissions(self):
         if self.action in ("list", "retrieve"):
@@ -123,12 +148,36 @@ class MeterReadingViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
 
     def get_permissions(self):
         # Члены СНТ могут вводить свои показания
-        if self.action in ("create", "list", "retrieve"):
+        if self.action in ("create", "list", "retrieve", "photo"):
             return [IsOrgMember()]
         return [IsTreasurer()]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if own_meters_only(self.request.user):
+            qs = qs.filter(own_meter_q(self.request.user, "meter__")).distinct()
+        return qs
 
     def perform_create(self, serializer):
         serializer.save(
             organization=require_org(self.request),
             submitted_by=self.request.user,
         )
+
+    @action(detail=True, methods=["get"], permission_classes=[IsOrgMember])
+    def photo(self, request, pk=None):
+        """
+        Фото показания — только тем, кто видит само показание: казначею и
+        владельцу участка. В открытую /media/ фото больше не попадают.
+        """
+        import mimetypes
+
+        from django.http import FileResponse, Http404
+
+        reading = self.get_object()
+        if not reading.photo:
+            raise Http404
+        ctype = mimetypes.guess_type(reading.photo.name)[0] or "application/octet-stream"
+        resp = FileResponse(reading.photo.open("rb"), content_type=ctype)
+        resp["Cache-Control"] = "private, no-store"
+        return resp

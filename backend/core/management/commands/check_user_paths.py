@@ -418,6 +418,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("ЗАГРУЗКА ИЗ EXCEL"))
         self._check_excel_import(c, CH, ME)
 
+        # ---------------- Закрытые дыры ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("ЗАКРЫТЫЕ ДЫРЫ"))
+        self._check_security_holes(c, CH)
+
         # ---------------- Роль администратора = флаг суперпользователя ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("РОЛЬ АДМИНИСТРАТОРА"))
         self._check_role_consistency(c)
@@ -1832,6 +1836,103 @@ class Command(BaseCommand):
         self.verify("смета и выгрузка: рядовому члену закрыты",
                     r.status_code == 403 and r2.status_code == 403,
                     f"{r.status_code} {r2.status_code}")
+
+    def _check_security_holes(self, c, chairman_headers):
+        """
+        Четыре дыры: председатель выключал своё СНТ; удаление проведённой
+        выписки открывало двойное проведение; член видел и правил чужие
+        счётчики; фото показаний лежали в открытой /media/.
+        """
+        import datetime as dt
+        import io
+        import json as _json
+        from decimal import Decimal
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from django.utils import timezone
+        from PIL import Image
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        from accounts.models import User
+        from billing.models import BankStatement, BankTransaction
+        from electricity.models import Meter, MeterReading
+        from members.models import Member, Plot, PlotOwnership
+
+        org = self._fixture_org
+
+        # 1. is_active меняет только администратор платформы
+        r = c.patch(f"/api/organizations/{org.pk}/",
+                    data=_json.dumps({"is_active": False, "phone": "+7 900 111-22-33"}),
+                    content_type="application/json", **chairman_headers)
+        org.refresh_from_db()
+        self.verify("председатель не может выключить своё СНТ (реквизиты при этом правит)",
+                    r.status_code == 200 and org.is_active and org.phone == "+7 900 111-22-33",
+                    f"HTTP {r.status_code}, active={org.is_active}")
+
+        # 2. Проведённую выписку не удалить
+        st1 = BankStatement.objects.create(organization=org, file_name="applied.txt")
+        BankTransaction.objects.create(organization=org, statement=st1, doc_number="SEC-1",
+                                       date=dt.date(2026, 9, 1), amount=Decimal("100"),
+                                       status=BankTransaction.STATUS_APPLIED)
+        st2 = BankStatement.objects.create(organization=org, file_name="fresh.txt")
+        BankTransaction.objects.create(organization=org, statement=st2, doc_number="SEC-2",
+                                       date=dt.date(2026, 9, 1), amount=Decimal("100"))
+        r1 = c.delete(f"/api/billing/statements/{st1.pk}/", **chairman_headers)
+        r2 = c.delete(f"/api/billing/statements/{st2.pk}/", **chairman_headers)
+        self.verify("проведённую выписку удалить нельзя (иначе повторная загрузка задвоит деньги)",
+                    r1.status_code == 400 and BankStatement.objects.filter(pk=st1.pk).exists(),
+                    f"HTTP {r1.status_code}")
+        self.verify("непроведённую выписку удалить можно",
+                    r2.status_code == 204 and not BankStatement.objects.filter(pk=st2.pk).exists(),
+                    f"HTTP {r2.status_code}")
+
+        # 3–4. Член: только свои счётчики; фото — из закрытого хранилища
+        def owner(n):
+            m = Member.objects.create(organization=org, last_name=f"Безопаснов{n}",
+                                      first_name="Тест")
+            p = Plot.objects.create(organization=org, number=f"SEC-{n}")
+            PlotOwnership.objects.create(organization=org, plot=p, member=m,
+                                         date_from=timezone.localdate())
+            u = User(username=f"__sec_{n}__", organization=org, member=m,
+                     role=User.ROLE_MEMBER)
+            u.set_unusable_password()
+            u.save()
+            meter = Meter.objects.create(organization=org, plot=p, serial_number=f"SEC-M{n}")
+            return {"HTTP_AUTHORIZATION": f"Bearer {AccessToken.for_user(u)}"}, meter
+
+        h1, m1 = owner(1)
+        h2, m2 = owner(2)
+        r = c.post("/api/electricity/readings/", data={"meter": m2.pk, "date": "2026-09-30",
+                                                       "value": "10"}, **h1)
+        self.verify("член не сдаёт показание по чужому счётчику своего СНТ",
+                    r.status_code == 400 and not MeterReading.objects.filter(meter=m2).exists(),
+                    f"HTTP {r.status_code}")
+        buf = io.BytesIO()
+        Image.new("RGB", (20, 20), (200, 200, 200)).save(buf, "PNG")
+        r = c.post("/api/electricity/readings/", data={
+            "meter": m1.pk, "date": "2026-09-30", "value": "10",
+            "photo": SimpleUploadedFile("m.png", buf.getvalue(), "image/png")}, **h1)
+        body = self._json(r) or {}
+        reading = MeterReading.objects.filter(meter=m1).first()
+        self.verify("своё показание с фото принято; фото в закрытой части, наружу — без /media/",
+                    r.status_code == 201 and reading is not None
+                    and reading.photo.name.startswith("private/")
+                    and body.get("has_photo") is True and "/media/" not in _json.dumps(body),
+                    f"HTTP {r.status_code}, {reading and reading.photo.name}")
+        own = self._results(c.get("/api/electricity/readings/?page_size=200", **h1)) or []
+        meters = self._results(c.get("/api/electricity/meters/?page_size=200", **h1)) or []
+        self.verify("член видит только свои показания и счётчики",
+                    own and all(x["meter"] == m1.pk for x in own)
+                    and [x["id"] for x in meters] == [m1.pk],
+                    f"показаний {len(own)}, счётчиков {[x['id'] for x in meters]}")
+        if reading is not None:
+            url = f"/api/electricity/readings/{reading.pk}/photo/"
+            ra, rb, rc = c.get(url, **h1), c.get(url, **h2), c.get(url, **chairman_headers)
+            self.verify("фото показания: владельцу и председателю — да, соседу — нет",
+                        ra.status_code == 200 and ra["Content-Type"] == "image/png"
+                        and rb.status_code == 404 and rc.status_code == 200,
+                        f"{ra.status_code} {rb.status_code} {rc.status_code}")
+            reading.photo.delete(save=False)
 
     def _check_role_consistency(self, c):
         """
