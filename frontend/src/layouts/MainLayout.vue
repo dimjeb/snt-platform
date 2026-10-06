@@ -144,6 +144,10 @@
           <!-- Django Admin — только для суперадмина -->
           <template v-if="auth.isSuperAdmin">
             <div class="snt-nav-group-label">Система</div>
+            <q-item clickable v-ripple to="/setup" class="snt-nav-item">
+              <q-item-section avatar><q-icon name="add_business" /></q-item-section>
+              <q-item-section>Новое садоводство</q-item-section>
+            </q-item>
             <q-item
               clickable v-ripple
               tag="a"
@@ -228,24 +232,12 @@
           <div v-else class="text-grey-6 text-center q-pa-md">Организации не найдены</div>
         </q-card-section>
 
-        <q-expansion-item icon="add" label="Создать новую организацию" class="q-mx-md q-mb-sm">
-          <q-card flat bordered>
-            <q-card-section class="q-gutter-sm">
-              <q-input v-model="newOrg.name" label="Название СНТ *" outlined dense />
-              <q-input v-model="newOrg.inn" label="ИНН" outlined dense maxlength="12" />
-              <q-input v-model="newOrg.legal_address" label="Юридический адрес" outlined dense />
-              <q-btn
-                color="green-8"
-                label="Создать"
-                :loading="creatingOrg"
-                :disable="!newOrg.name"
-                @click="createOrg"
-                unelevated
-                class="full-width"
-              />
-            </q-card-section>
-          </q-card>
-        </q-expansion-item>
+        <div class="q-mx-md q-mb-sm">
+          <q-btn
+            outline color="green-8" icon="add_business" class="full-width"
+            label="Мастер нового садоводства" to="/setup" @click="orgDialog = false"
+          />
+        </div>
 
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
@@ -271,9 +263,7 @@ const drawer = ref(false)
 const profileMenu = ref(false)
 const orgDialog = ref(false)
 const orgsLoading = ref(false)
-const creatingOrg = ref(false)
 const orgs = ref([])
-const newOrg = ref({ name: '', inn: '', legal_address: '' })
 
 const user = computed(() => auth.user)
 const isMemberOnly = computed(() => auth.isMember)
@@ -302,6 +292,7 @@ const pageTitles = {
   '/meter-reading': 'Показания счётчика',
   '/reports': 'Отчёты',
   '/organization': 'Товарищество',
+  '/setup': 'Новое садоводство',
 }
 const pageTitle = computed(() => pageTitles[route.path] || 'СНТ Платформа')
 
@@ -324,21 +315,6 @@ function selectOrg(o) {
   router.go(0)
 }
 
-async function createOrg() {
-  if (!newOrg.value.name) return
-  creatingOrg.value = true
-  try {
-    const { data } = await api.post('/organizations/', newOrg.value)
-    orgs.value.push(data)
-    newOrg.value = { name: '', inn: '', legal_address: '' }
-    selectOrg(data)
-    $q.notify({ type: 'positive', message: 'Организация создана' })
-  } catch {
-    $q.notify({ type: 'negative', message: 'Ошибка создания организации' })
-  } finally {
-    creatingOrg.value = false
-  }
-}
 
 watch(orgDialog, (val) => { if (val) loadOrgs() })
 

@@ -176,6 +176,13 @@ boss = User(username=os.environ["SMOKE_LOGIN"] + "-chair", organization=org,
             role=User.ROLE_CHAIRMAN, is_active=True, must_change_password=False)
 boss.set_password(os.environ["SMOKE_PASSWORD"])
 boss.save()
+
+# Администратор платформы — под ним проверяется мастер нового садоводства.
+root = User(username=os.environ["SMOKE_LOGIN"] + "-admin", organization=None,
+            role=User.ROLE_SUPERADMIN, is_active=True, is_staff=True,
+            is_superuser=True, must_change_password=False)
+root.set_password(os.environ["SMOKE_PASSWORD"])
+root.save()
 PY
 
 echo "→ Django на порту $APIPORT"

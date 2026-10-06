@@ -30,6 +30,10 @@
             label="Срок оплаты" @click="openDueDate"
           />
           <q-btn
+            size="sm" outline color="grey-8" icon="upload_file"
+            label="Загрузить долги из Excel" @click="debtImportDialog = true"
+          />
+          <q-btn
             size="sm" outline color="deep-orange-8" icon="gavel"
             label="Начислить пени" :loading="actionLoading"
             @click="confirmPenalties"
@@ -430,6 +434,15 @@
         </q-card-actions>
       </q-card>
     </q-dialog>
+    <ExcelImportDialog
+      v-model="debtImportDialog"
+      title="Долги из Excel"
+      hint="Начальные остатки при переходе на сайт: участок, сумма, за что (членский, целевой, свет, прочее или название вида начисления) и за какой год. Долг ложится в годовой период. Повторная загрузка ничего не задвоит."
+      endpoint="/billing/charges/import/"
+      template-endpoint="/billing/charges/import-template/"
+      template-name="Шаблон — долги.xlsx"
+      @done="loadPeriods"
+    />
   </q-page>
 </template>
 
@@ -438,6 +451,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useQuasar } from 'quasar'
 import { useAuthStore } from 'stores/auth'
 import api from 'src/api/client'
+import ExcelImportDialog from 'components/ExcelImportDialog.vue'
 
 const $q = useQuasar()
 const auth = useAuthStore()
@@ -458,6 +472,7 @@ const paymentsTruncated = computed(() => paymentsTotal.value > payments.value.le
 const actionLoading = ref(false)
 const bulkMembershipDialog = ref(false)
 const bulkTargetDialog = ref(false)
+const debtImportDialog = ref(false)
 const paymentDialog = ref(false)
 // Членские в большинстве товариществ считают от площади, целевые чаще
 // одной суммой на участок — отсюда разные значения по умолчанию.

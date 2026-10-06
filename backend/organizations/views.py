@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from core.permissions import IsChairman, IsSuperAdmin, require_org
 from .models import Organization
 from .serializers import OrganizationSerializer, OrganizationShortSerializer
+from .setup import SetupSerializer, create_snt
 
 LOGO_MAX_BYTES = 2 * 1024 * 1024
 LOGO_FORMATS = {"PNG": "png", "JPEG": "jpg", "WEBP": "webp"}
@@ -40,7 +41,7 @@ class OrganizationViewSet(viewsets.ModelViewSet):
     serializer_class = OrganizationSerializer
 
     def get_permissions(self):
-        if self.action in ("list", "create", "destroy"):
+        if self.action in ("list", "create", "destroy", "setup"):
             return [IsSuperAdmin()]
         if self.action == "current":
             return [permissions.IsAuthenticated()]
@@ -83,3 +84,23 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             org.logo.storage.delete(old)
         return Response(OrganizationShortSerializer(
             org, context={"request": request}).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"])
+    def setup(self, request):
+        """
+        Мастер нового садоводства: товарищество + председатель (+ казначей)
+        одной транзакцией. Временные пароли — в ответе, один раз.
+        """
+        from core.audit import record_access
+        from core.models import AccessLog
+
+        s = SetupSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        org, accounts = create_snt(s.validated_data)
+        record_access(request, "мастер нового садоводства: выдача доступа",
+                      AccessLog.ACTION_DETAIL, object_id=org.pk,
+                      records=len(accounts))
+        return Response({
+            "organization": OrganizationSerializer(org).data,
+            "accounts": accounts,
+        }, status=status.HTTP_201_CREATED)
