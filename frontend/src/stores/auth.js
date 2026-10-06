@@ -63,6 +63,11 @@ export const useAuthStore = defineStore('auth', {
       localStorage.setItem('user', JSON.stringify(data))
     },
 
+    setUser(data) {
+      this.user = data
+      localStorage.setItem('user', JSON.stringify(data))
+    },
+
     setOrgInfo(info) {
       this.orgInfo = info
     },

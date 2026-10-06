@@ -333,7 +333,23 @@ async function loadOrgInfo() {
     auth.setOrgInfo(data)
   } catch { auth.setOrgInfo(null) }
 }
-onMounted(loadOrgInfo)
+// Роль и права перечитываются при каждом открытии сайта: при входе они
+// запоминаются в браузере, и без этого изменение прав на сервере (сняли
+// администратора, назначили казначея) доходило до человека только после
+// выхода и повторного входа.
+async function refreshMe() {
+  try {
+    const { data } = await api.get('/me/')
+    auth.setUser(data)
+    const allowed = route.meta?.roles
+    if (allowed && !allowed.includes(data.role)) router.replace('/dashboard')
+  } catch { /* нет сети или сессия истекла — клиент сам отправит на вход */ }
+}
+
+onMounted(() => {
+  loadOrgInfo()
+  refreshMe()
+})
 
 async function logout() {
   auth.logout()

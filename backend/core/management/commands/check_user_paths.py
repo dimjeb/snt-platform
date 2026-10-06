@@ -418,6 +418,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("ЗАГРУЗКА ИЗ EXCEL"))
         self._check_excel_import(c, CH, ME)
 
+        # ---------------- Роль администратора = флаг суперпользователя ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("РОЛЬ АДМИНИСТРАТОРА"))
+        self._check_role_consistency(c)
+
         # ---------------- Мастер нового садоводства ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("МАСТЕР НОВОГО САДОВОДСТВА"))
         self._check_snt_setup(c, AD, CH, ME)
@@ -1828,6 +1832,45 @@ class Command(BaseCommand):
         self.verify("смета и выгрузка: рядовому члену закрыты",
                     r.status_code == 403 and r2.status_code == 403,
                     f"{r.status_code} {r2.status_code}")
+
+    def _check_role_consistency(self, c):
+        """
+        Сняли флаг суперпользователя — роль администратора уходит вместе с
+        ним. Раньше роль оставалась, и человек видел меню администратора,
+        а сервер ему же отказывал.
+        """
+        import json as _json
+
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        from accounts.models import User
+
+        org = self._fixture_org
+        u = User(username="__role_check__", organization=org, is_superuser=True,
+                 is_staff=True, role=User.ROLE_SUPERADMIN)
+        u.set_unusable_password()
+        u.save()
+        u.is_superuser = False
+        u.is_staff = False
+        u.save(update_fields=["is_superuser", "is_staff"])
+        u.refresh_from_db()
+        hdr = {"HTTP_AUTHORIZATION": f"Bearer {AccessToken.for_user(u)}"}
+        me = self._json(c.get("/api/me/", **hdr)) or {}
+        self.verify("снят флаг суперпользователя — роль «председатель», не «суперадмин»",
+                    u.role == User.ROLE_CHAIRMAN and me.get("role") == "chairman",
+                    f"role={u.role}, /me={me.get('role')}")
+        r = c.post("/api/organizations/setup/", data=_json.dumps({}),
+                   content_type="application/json", **hdr)
+        self.verify("бывший администратор новое садоводство не заводит", r.status_code == 403,
+                    f"HTTP {r.status_code}")
+        loose = User(username="__role_check_2__", is_superuser=False,
+                     role=User.ROLE_SUPERADMIN)
+        loose.set_unusable_password()
+        loose.save()
+        self.verify("«суперадмин» без флага и без СНТ становится рядовым",
+                    loose.role == User.ROLE_MEMBER, loose.role)
+        u.delete()
+        loose.delete()
 
     def _check_snt_setup(self, c, admin_headers, chairman_headers, member_headers):
         """
