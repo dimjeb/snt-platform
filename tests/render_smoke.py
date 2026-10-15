@@ -698,6 +698,42 @@ with sync_playwright() as pw:
            "Пропущена: проверка" in body_text(page)
            and page.get_by_role("button", name="Вернуть к проведению").count() == 1, "")
 
+    # 12. Разовое начисление одному участку и удаление ошибочного.
+    import re as _re12
+    page.goto(f"{BASE}/billing", wait_until="networkidle")
+    page.wait_for_timeout(1500)
+    page.locator(".q-btn-dropdown", has_text="Начислить").click()
+    page.wait_for_timeout(400)
+    page.locator(".q-menu .q-item", has_text="Одному участку").click()
+    page.wait_for_timeout(1200)
+    dlg = page.locator(".q-dialog")
+    dlg.get_by_label("Участок *").click()
+    page.wait_for_timeout(600)
+    page.get_by_role("option", name=_re12.compile(r"Уч\. №1 —")).first.click()
+    dlg.get_by_label("Вид начисления *").fill("Штраф браузерный")
+    dlg.get_by_label("Вид начисления *").press("Enter")
+    page.wait_for_timeout(1000)
+    dlg.get_by_label("Сумма (₽) *").fill("250")
+    dlg.get_by_label("За что *").fill("проверка разового начисления")
+    dlg.get_by_role("button", name="Начислить", exact=True).click()
+    page.wait_for_timeout(2000)
+    verify("разовое начисление создано из интерфейса",
+           "Начислено 250 ₽" in body_text(page), body_text(page)[:160])
+    page.get_by_role("tab", name="Начисления").click()
+    page.wait_for_timeout(1200)
+    row = page.locator(".q-item", has_text="проверка разового начисления")
+    verify("в списке видно, что начисление разовое и кто начислил",
+           row.count() == 1 and "разовое · начислил(а)" in row.inner_text(), "")
+    if row.count():
+        row.get_by_role("button", name="Удалить").click()
+        page.wait_for_timeout(600)
+        page.locator(".q-dialog").get_by_role("button", name="Удалить").click()
+        page.wait_for_timeout(2000)
+        verify("ошибочное начисление удаляется",
+               "Начисление удалено" in body_text(page)
+               and page.locator(".q-item", has_text="проверка разового начисления").count() == 0,
+               "")
+
     browser.close()
 
 print()
