@@ -13,7 +13,7 @@
       @update:model-value="onPeriodChange"
     />
 
-    <q-tabs v-model="tab" dense align="left" class="q-mb-md" active-color="green-8" indicator-color="green-8">
+    <q-tabs v-model="tab" dense align="left" class="q-mb-md" active-color="primary" indicator-color="primary">
       <q-tab name="debt" label="Долги" />
       <q-tab name="charges" label="Начисления" />
       <q-tab name="payments" label="Платежи" />
@@ -57,50 +57,59 @@
           </q-btn>
         </div>
 
+        <div v-if="debtSummary.length" class="row items-center q-mb-xs text-caption text-grey-8">
+          <q-toggle v-model="onlyDebtors" dense label="Только с долгом" />
+          <q-space />
+          <span>Должников {{ debtorsCount }} из {{ debtSummary.length }} · долг {{ rub(debtTotal) }}</span>
+        </div>
         <q-list separator bordered rounded>
-          <q-item v-for="d in debtSummary" :key="d.plot_id">
+          <q-item v-for="d in shownDebts" :key="d.plot_id" class="debt-row">
             <q-item-section>
-              <q-item-label>Уч. №{{ d.plot_number }}{{ ownerSuffix(d) }}</q-item-label>
-              <q-item-label caption>
-                Начислено {{ formatMoney(d.total_charged) }} · оплачено {{ formatMoney(d.total_paid) }}
-              </q-item-label>
-              <!-- За что именно: по видам начислений. Строки с долгом —
-                   красным, оплаченные — зелёным, чтобы с одного взгляда
-                   было видно, что закрыто, а что нет. -->
-              <div v-if="d.items && d.items.length" class="debt-items q-mt-xs">
-                <div v-for="item in d.items" :key="item.name" class="debt-item">
-                  <span class="debt-item-name">{{ item.name }}</span>
-                  <span v-if="Number(item.debt) > 0" class="text-negative">
-                    долг {{ formatMoney(item.debt) }}
-                    <span class="text-grey-7">из {{ formatMoney(item.charged) }}</span>
-                  </span>
-                  <span v-if="Number(item.debt) > 0 && item.due_date"
-                        :class="item.overdue ? 'text-negative text-weight-medium' : 'text-grey-7'">
-                    {{ item.overdue ? 'просрочено, срок был' : 'оплатить до' }}
-                    {{ formatDate(item.due_date) }}
-                  </span>
-                  <span v-else-if="Number(item.debt) < 0" class="text-blue-8">
-                    переплата {{ formatMoney(-item.debt) }}
-                  </span>
-                  <span v-else class="text-green-8">оплачено {{ formatMoney(item.charged) }}</span>
-                </div>
-                <div v-for="a in d.advances" :key="'adv-' + a.category" class="debt-item">
-                  <span class="debt-item-name">Аванс</span>
-                  <span class="text-blue-8">
-                    {{ formatMoney(a.amount) }}
-                    <template v-if="a.category"> — ждёт «{{ advanceLabel(a.category) }}»</template>
-                  </span>
-                </div>
+              <div class="debt-row__head">
+                <span class="debt-row__plot">Уч. №{{ d.plot_number }}{{ ownerSuffix(d) }}</span>
+                <span v-if="Number(d.debt) > 0" class="debt-amount">{{ rub(d.debt) }}</span>
+                <span v-else-if="Number(d.total_charged) > 0" class="paid-amount">
+                  <q-icon name="check" /> оплачено
+                </span>
+                <span v-else class="text-grey-6 text-caption">нет начислений</span>
               </div>
-            </q-item-section>
-            <q-item-section side>
-              <span :class="d.debt > 0 ? 'debt-amount' : 'paid-amount'">
-                {{ d.debt > 0 ? formatMoney(d.debt) + ' ₽' : '✓' }}
-              </span>
+              <!-- За что именно: по видам начислений. Слева — вид,
+                   справа — что с ним; сетка держит колонки ровно и на
+                   телефоне. -->
+              <div v-if="(d.items && d.items.length) || (d.advances && d.advances.length)"
+                   class="debt-items q-mt-xs">
+                <template v-for="item in d.items" :key="item.name">
+                  <span class="debt-item-name">{{ item.name }}</span>
+                  <span v-if="Number(item.debt) > 0" class="debt-item-state">
+                    <span class="text-negative">долг {{ rub(item.debt) }}</span>
+                    <span class="text-grey-7"> из {{ rub(item.charged) }}</span>
+                    <span v-if="item.due_date" class="debt-item-due"
+                          :class="item.overdue ? 'text-negative text-weight-medium' : 'text-grey-7'">
+                      {{ item.overdue ? 'просрочено, срок был' : 'оплатить до' }}
+                      {{ formatDate(item.due_date) }}
+                    </span>
+                  </span>
+                  <span v-else-if="Number(item.debt) < 0" class="debt-item-state text-info">
+                    переплата {{ rub(-item.debt) }}
+                  </span>
+                  <span v-else class="debt-item-state paid-amount">
+                    оплачено {{ rub(item.charged) }}
+                  </span>
+                </template>
+                <template v-for="a in d.advances" :key="'adv-' + a.category">
+                  <span class="debt-item-name">Аванс</span>
+                  <span class="debt-item-state text-info">
+                    {{ rub(a.amount) }}<template v-if="a.category">, ждёт «{{ advanceLabel(a.category) }}»</template>
+                  </span>
+                </template>
+              </div>
             </q-item-section>
           </q-item>
           <q-item v-if="!debtSummary.length">
             <q-item-section class="text-center text-grey-6">Нет данных за период</q-item-section>
+          </q-item>
+          <q-item v-else-if="!shownDebts.length">
+            <q-item-section class="text-center text-grey-6">Должников нет</q-item-section>
           </q-item>
         </q-list>
       </q-tab-panel>
@@ -133,9 +142,9 @@
               </q-item-label>
             </q-item-section>
             <q-item-section side>
-              <div>{{ formatMoney(c.amount) }} ₽</div>
-              <div v-if="Number(c.paid_amount) > 0" class="text-caption text-green-8">
-                оплачено {{ formatMoney(c.paid_amount) }}
+              <div class="text-no-wrap">{{ rub(c.amount) }}</div>
+              <div v-if="Number(c.paid_amount) > 0" class="text-caption text-positive">
+                оплачено {{ rub(c.paid_amount) }}
               </div>
               <q-btn
                 v-if="Number(c.paid_amount) > 0"
@@ -169,7 +178,7 @@
               <q-item-label>{{ p.charge_info }}</q-item-label>
               <q-item-label caption>{{ p.date }} · {{ methodLabel(p.method) }}</q-item-label>
             </q-item-section>
-            <q-item-section side class="paid-amount">{{ formatMoney(p.amount) }} ₽</q-item-section>
+            <q-item-section side class="paid-amount text-no-wrap">{{ rub(p.amount) }}</q-item-section>
           </q-item>
           <q-item v-if="!payments.length">
             <q-item-section class="text-center text-grey-6">Нет платежей</q-item-section>
@@ -187,7 +196,7 @@
             <q-option-group
               v-model="membershipForm.basis"
               :options="basisOptions"
-              color="green-8" dense
+              color="primary" dense
             />
             <q-input
               v-if="membershipForm.basis === 'flat'"
@@ -296,7 +305,7 @@
                 { label: 'Всем участкам', value: 'all' },
                 { label: 'Выбранным участкам', value: 'some' },
               ]"
-            color="blue-8" dense inline
+            color="primary" dense inline
           />
           <q-select
             v-if="targetScope === 'some'"
@@ -469,6 +478,7 @@ import { useQuasar } from 'quasar'
 import { useAuthStore } from 'stores/auth'
 import api from 'src/api/client'
 import ExcelImportDialog from 'components/ExcelImportDialog.vue'
+import { formatMoney, rub } from 'src/utils/money'
 
 const $q = useQuasar()
 const auth = useAuthStore()
@@ -477,6 +487,13 @@ const tab = ref('debt')
 const periods = ref([])
 const selectedPeriod = ref(null)
 const debtSummary = ref([])
+const onlyDebtors = ref(false)
+const debtorsCount = computed(() => debtSummary.value.filter((d) => Number(d.debt) > 0).length)
+const debtTotal = computed(() => debtSummary.value
+  .reduce((s, d) => s + Math.max(Number(d.debt) || 0, 0), 0))
+const shownDebts = computed(() => (onlyDebtors.value
+  ? debtSummary.value.filter((d) => Number(d.debt) > 0)
+  : debtSummary.value))
 const charges = ref([])
 const payments = ref([])
 // Сколько записей за период есть всего. Список тянется страницей, и без
@@ -590,7 +607,6 @@ function methodLabel(m) {
   if (m === 'transfer') return 'Перенос между начислениями'
   return methodOptions.find((o) => o.value === m)?.label || m
 }
-function formatMoney(v) { return v ? Number(v).toLocaleString('ru-RU', { maximumFractionDigits: 0 }) : '0' }
 function advanceLabel(category) {
   return { target: 'Целевой взнос', membership: 'Членский взнос',
     electricity: 'Электроэнергия' }[category] || category
@@ -1092,18 +1108,29 @@ onMounted(async () => {
 <style scoped>
 /* Предварительный расчёт по соткам: заметная плашка, а не сноска —
    именно здесь видно, скольким участкам начисление не уйдёт. */
-.debt-items {
-  font-size: 12px;
-  line-height: 1.5;
-}
-.debt-item {
+.debt-row__head {
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
 }
-.debt-item-name {
-  color: rgba(0, 0, 0, 0.7);
-  min-width: 130px;
+.debt-row__plot { min-width: 0; }
+.debt-row__head .debt-amount,
+.debt-row__head .paid-amount { white-space: nowrap; }
+/* Вид начисления слева, состояние справа. Сетка, а не flex-wrap:
+   на телефоне раньше «оплачено …» уезжало на отдельную строку. */
+.debt-items {
+  display: grid;
+  grid-template-columns: minmax(110px, max-content) 1fr;
+  column-gap: 12px;
+  row-gap: 2px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.debt-item-name { opacity: 0.75; }
+.debt-item-due { display: block; }
+@media (min-width: 600px) {
+  .debt-item-due { display: inline; margin-left: 8px; }
 }
 .charge-preview {
   background: rgba(0, 0, 0, 0.04);

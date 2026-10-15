@@ -1,7 +1,6 @@
 <template>
   <q-page class="q-pa-md">
     <div class="row items-center q-mb-md">
-      <div class="text-h6">Банковская выписка</div>
       <q-space />
       <q-btn
         icon="upload_file"
@@ -14,7 +13,7 @@
 
     <!-- Разобранная выписка -->
     <q-card flat bordered v-if="statement" class="q-mb-md">
-      <q-card-section class="bg-green-8 text-white">
+      <q-card-section class="bg-primary text-white">
         <div class="text-subtitle1">{{ statement.file_name }}</div>
         <div class="text-caption">
           {{ statement.date_from }} — {{ statement.date_to }} · счёт {{ statement.account }}
@@ -27,7 +26,7 @@
           <div class="text-caption text-grey-7">поступлений</div>
         </div>
         <div class="col-4">
-          <div class="text-h6 text-weight-bold text-green-8">{{ summary.matched }}</div>
+          <div class="text-h6 text-weight-bold text-positive">{{ summary.matched }}</div>
           <div class="text-caption text-grey-7">опознано</div>
         </div>
         <div class="col-4">
@@ -203,7 +202,7 @@
     <!-- Загрузка -->
     <q-dialog v-model="uploadDialog">
       <q-card style="min-width: 340px; max-width: 460px">
-        <q-card-section class="bg-green-8 text-white">
+        <q-card-section class="bg-primary text-white">
           <div class="text-h6">Загрузить выписку</div>
         </q-card-section>
         <q-card-section class="q-gutter-md">
@@ -244,6 +243,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useQuasar } from 'quasar'
 import api from 'src/api/client'
+import { formatMoney } from 'src/utils/money'
 
 const $q = useQuasar()
 
@@ -259,9 +259,6 @@ const manualPlot = ref({})
 const allPlots = ref([])
 const plotOptions = ref([])
 
-function formatMoney(v) {
-  return Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2 })
-}
 
 function matchLabel(t) {
   return {

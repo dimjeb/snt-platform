@@ -424,7 +424,7 @@ def story_member(page: Page):
     # 3.1 Управленческая статистика скрыта
     try:
         settle(page)
-        hidden = page.locator('.text-caption:text-is("Членов")').count() == 0
+        hidden = page.locator('.dash-stat__label:text-is("Членов")').count() == 0
         log("Член СНТ: статистика управления скрыта", hidden,
             "" if hidden else "карточка «Членов» видна, а не должна")
     except Exception as e:

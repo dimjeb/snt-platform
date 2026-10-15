@@ -35,7 +35,10 @@ def verify(label, condition, extra=""):
 
 
 def body_text(page):
-    return (page.locator("body").inner_text() or "").strip()
+    # Суммы пишутся с неразрывными пробелами («1 000 ₽» не рвётся на две
+    # строки); проверки сравнивают с обычными.
+    text = page.locator("body").inner_text() or ""
+    return text.replace("\u00a0", " ").replace("\u202f", " ").strip()
 
 
 def chromium_path():
@@ -225,6 +228,12 @@ with sync_playwright() as pw:
 
     page.goto(f"{BASE}/members", wait_until="networkidle")
     page.wait_for_timeout(1500)
+    members_list = page.locator(".q-page .q-list").first.inner_text()
+    verify("список членов без шума: нет «Действующий» и прочерков «Уч. —»",
+           "Действующий" not in members_list and "Уч. —" not in members_list
+           and "— ·" not in members_list, members_list[:160])
+    verify("заголовок страницы — в шапке",
+           page.locator(".snt-page-title").inner_text().strip() == "Члены СНТ", "")
     page.get_by_text("Бездоступов").first.click()
     page.wait_for_timeout(800)
     card = body_text(page)
@@ -260,6 +269,12 @@ with sync_playwright() as pw:
     verify("в сводке долгов видно, за что долг",
            "Членский взнос" in debt_text and "долг 1" in debt_text,
            debt_text[debt_text.find("Проверкин"):][:200])
+    # Начисление с долгом, но без срока оплаты показывалось сразу и
+    # «долг 827 из 827», и зелёным «оплачено 827»: v-else висел не на том v-if.
+    states = page.locator(".debt-item-state").all_inner_texts()
+    both = [t for t in states if "долг" in t and "оплачено" in t]
+    verify("в строке долга нет одновременно «долг» и «оплачено»",
+           bool(states) and not both, "; ".join(both[:2]))
 
     page.locator(".q-btn-dropdown", has_text="Начислить").click()
     page.wait_for_timeout(400)
@@ -387,9 +402,9 @@ with sync_playwright() as pw:
            "Разделено полностью" in body_text(page), "")
     page.get_by_role("button", name="Сохранить").click()
     page.wait_for_timeout(1500)
-    split_text = body_text(page)
+    split_text = body_text(page).replace("\u00a0", " ")
     verify("разделение сохранилось и видно в строке выписки",
-           "Разделено: Членский взнос 600,00 ₽ + Целевой взнос 400,00 ₽" in split_text,
+           "Разделено: Членский взнос 600 ₽ + Целевой взнос 400 ₽" in split_text,
            split_text[split_text.find("Разделено"):][:120] if "Разделено" in split_text else "строки нет")
 
     # 9а. Новый счётчик на участке, где свет давно горит: сразу
@@ -529,7 +544,7 @@ with sync_playwright() as pw:
     rate = page.locator("[data-test=rate]").inner_text()
     budget_text = body_text(page).replace("\u00a0", " ").replace("\u202f", " ")
     verify("смета: статья «12 × 1000» = 12 000 и посчитан членский взнос",
-           "12 000,00 ₽" in budget_text and "₽" in rate and "—" not in rate,
+           "12 000 ₽" in budget_text and "₽" in rate and "—" not in rate,
            rate)
     page.get_by_role("button", name="Утвердить (по решению собрания)").click()
     page.wait_for_timeout(400)

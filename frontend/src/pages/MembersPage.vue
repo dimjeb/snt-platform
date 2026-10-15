@@ -1,11 +1,20 @@
 <template>
   <q-page class="q-pa-md">
     <div class="row items-center q-mb-md">
-      <div class="text-h6">Члены СНТ</div>
       <q-space />
-      <q-btn icon="upload_file" color="primary" flat no-caps label="Загрузить из Excel"
-             class="q-mr-xs" @click="importDialog = true" />
-      <q-btn icon="add" color="primary" round flat @click="openCreate" />
+      <q-btn icon="upload_file" color="primary" flat label="Загрузить из Excel"
+             class="q-mr-sm gt-xs" @click="importDialog = true" />
+      <q-btn icon="add" color="primary" unelevated label="Добавить" @click="openCreate" />
+      <q-btn class="lt-sm q-ml-xs" flat round color="grey-8" icon="more_vert" aria-label="Ещё">
+        <q-menu>
+          <q-list>
+            <q-item clickable v-close-popup @click="importDialog = true">
+              <q-item-section avatar><q-icon name="upload_file" /></q-item-section>
+              <q-item-section>Загрузить из Excel</q-item-section>
+            </q-item>
+          </q-list>
+        </q-menu>
+      </q-btn>
     </div>
 
     <q-input v-model="search" outlined dense placeholder="Поиск по ФИО, телефону..." class="q-mb-md" clearable>
@@ -14,17 +23,22 @@
 
     <q-list separator bordered rounded>
       <q-item v-if="loading">
-        <q-item-section class="text-center"><q-spinner color="green-8" /></q-item-section>
+        <q-item-section class="text-center"><q-spinner color="primary" /></q-item-section>
       </q-item>
 
       <q-item v-for="m in members" :key="m.id" clickable v-ripple @click="openDetail(m)">
         <q-item-section avatar>
-          <q-avatar color="green-2" text-color="green-9" icon="person" />
+          <q-avatar class="member-avatar" size="40px">{{ initials(m.full_name) }}</q-avatar>
         </q-item-section>
         <q-item-section>
           <q-item-label>{{ m.full_name }}</q-item-label>
+          <!-- Только то, что есть: прочерки «— · Уч. —» читались как ошибка. -->
           <q-item-label caption>
-            {{ m.phone || '—' }} · Уч. {{ m.current_plots?.map((p) => p.number).join(', ') || '—' }}
+            <span v-if="m.current_plots?.length">
+              Уч. {{ m.current_plots.map((p) => p.number).join(', ') }}
+            </span>
+            <span v-else class="text-orange-9">без участка</span>
+            <template v-if="m.phone"> · {{ m.phone }}</template>
           </q-item-label>
         </q-item-section>
         <q-item-section side>
@@ -36,7 +50,9 @@
             >
               <q-tooltip>{{ accessIcon(m).hint }}</q-tooltip>
             </q-icon>
-            <q-badge :color="statusColor(m.status)">
+            <!-- «Действующий» — обычное состояние, его не подписываем:
+                 плашка у каждой строки заглушала те, где статус важен. -->
+            <q-badge v-if="m.status !== 'active'" outline :color="statusColor(m.status)">
               {{ statusLabel(m.status) }}
             </q-badge>
           </div>
@@ -55,7 +71,7 @@
     <!-- Диалог создания/редактирования -->
     <q-dialog v-model="dialog" persistent>
       <q-card style="min-width: 360px; max-width: 480px">
-        <q-card-section class="bg-green-8 text-white">
+        <q-card-section class="bg-primary text-white">
           <div class="text-h6">{{ editMode ? 'Редактировать члена' : 'Добавить члена' }}</div>
         </q-card-section>
         <q-card-section class="q-gutter-sm">
@@ -91,7 +107,7 @@
          повторно показать его нельзя даже председателю. -->
     <q-dialog v-model="passwordDialog" persistent>
       <q-card style="min-width: 320px; max-width: 420px" v-if="issued">
-        <q-card-section class="bg-green-8 text-white">
+        <q-card-section class="bg-primary text-white">
           <div class="text-h6">Доступ выдан</div>
           <div class="text-caption">{{ issued.full_name }}</div>
         </q-card-section>
@@ -129,28 +145,28 @@
 
     <q-dialog v-model="detailDialog">
       <q-card style="min-width: 340px; max-width: 480px" v-if="selected">
-        <q-card-section class="bg-green-8 text-white">
+        <q-card-section class="bg-primary text-white">
           <div class="text-h6">{{ selected.full_name }}</div>
           <div class="text-caption">{{ statusLabel(selected.status) }}</div>
         </q-card-section>
         <q-card-section>
           <q-list dense>
             <q-item v-if="selected.phone">
-              <q-item-section side><q-icon name="phone" color="green-8" /></q-item-section>
+              <q-item-section side><q-icon name="phone" color="primary" /></q-item-section>
               <q-item-section>{{ selected.phone }}</q-item-section>
             </q-item>
             <q-item v-if="selected.email">
-              <q-item-section side><q-icon name="email" color="green-8" /></q-item-section>
+              <q-item-section side><q-icon name="email" color="primary" /></q-item-section>
               <q-item-section>{{ selected.email }}</q-item-section>
             </q-item>
             <q-item>
-              <q-item-section side><q-icon name="landscape" color="green-8" /></q-item-section>
+              <q-item-section side><q-icon name="landscape" color="primary" /></q-item-section>
               <q-item-section>
                 Участки: {{ selected.current_plots?.map((p) => p.number).join(', ') || '—' }}
               </q-item-section>
             </q-item>
             <q-item v-if="selected.joined_at">
-              <q-item-section side><q-icon name="calendar_today" color="green-8" /></q-item-section>
+              <q-item-section side><q-icon name="calendar_today" color="primary" /></q-item-section>
               <q-item-section>Вступил: {{ selected.joined_at }}</q-item-section>
             </q-item>
             <q-item v-if="selected.notes">
@@ -267,6 +283,10 @@ const statusOptions = [
 ]
 function statusLabel(s) {
   return statusOptions.find((o) => o.value === s)?.label || s
+}
+function initials(name) {
+  return (name || '').split(/\s+/).filter(Boolean).slice(0, 2)
+    .map((w) => w[0].toUpperCase()).join('')
 }
 function statusColor(s) {
   return s === 'active' ? 'positive' : s === 'heir' ? 'orange-7' : 'grey'

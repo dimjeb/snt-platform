@@ -1,12 +1,11 @@
 <template>
   <q-page class="q-pa-md">
-    <div class="text-h6 q-mb-xs">Новое садоводство</div>
     <div class="text-body2 text-grey-7 q-mb-md">
       Реквизиты, председатель и казначей — обязательно. Реестр, долги и счётчики можно загрузить
       сразу или позже, с соответствующих страниц.
     </div>
 
-    <q-stepper v-model="step" vertical color="green-8" animated flat bordered class="wizard">
+    <q-stepper v-model="step" vertical color="primary" animated flat bordered class="wizard">
       <!-- 1. Товарищество -->
       <q-step :name="1" title="Товарищество" icon="home_work" :done="step > 1" :header-nav="!created">
         <div class="row q-col-gutter-sm">

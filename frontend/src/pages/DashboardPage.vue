@@ -124,7 +124,7 @@
                 <q-item-label caption v-if="d.kwh" class="text-orange-9">
                   {{ formatKwh(d.kwh) }} кВт·ч × {{ formatTariff(d.tariff) }} ₽
                 </q-item-label>
-                <q-item-label caption v-if="Number(d.paid_amount) > 0" class="text-green-8">
+                <q-item-label caption v-if="Number(d.paid_amount) > 0" class="text-positive">
                   оплачено {{ formatMoney(d.paid_amount) }} из {{ formatMoney(d.amount) }} ₽
                 </q-item-label>
                 <!-- Срок оплаты: садовод должен видеть его до того, как
@@ -216,7 +216,7 @@
       <!-- Оплата переводом: работает без эквайринга и без кассы -->
       <q-dialog v-model="qrDialog">
         <q-card style="min-width: 320px; max-width: 420px">
-          <q-card-section class="bg-blue-8 text-white">
+          <q-card-section class="bg-primary text-white">
             <div class="text-h6">Оплата по QR</div>
             <!-- С телефона камерой свой же экран не отсканировать: там
                  путь другой — сохранить картинку и открыть её в банке. -->
@@ -357,6 +357,7 @@ import { useRoute } from 'vue-router'
 import { copyToClipboard, useQuasar } from 'quasar'
 import { useAuthStore } from 'stores/auth'
 import api from 'src/api/client'
+import { formatMoney, rub } from 'src/utils/money'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -373,8 +374,8 @@ const summaryItems = computed(() => {
     { label: 'Участков', value: s.plots },
     { label: 'Членов', value: s.members },
     { label: 'Должников', value: s.debtors },
-    { label: 'Долг всего', value: `${formatMoney(s.total_debt)} ₽` },
-    { label: `Собрано за ${s.year}`, value: `${formatMoney(s.collected_year)} ₽` },
+    { label: 'Долг всего', value: rub(s.total_debt) },
+    { label: `Собрано за ${s.year}`, value: rub(s.collected_year) },
   ]
 })
 
@@ -411,10 +412,6 @@ const qrPurpose = ref('')
 const qrRequisites = ref(null)
 const qrError = ref('')
 
-function formatMoney(val) {
-  if (!val) return '0'
-  return Number(val).toLocaleString('ru-RU', { maximumFractionDigits: 0 })
-}
 
 function formatDate(val) {
   return val ? val.split('-').reverse().join('.') : ''
@@ -619,7 +616,7 @@ async function checkReturnedPayment() {
   try {
     const { data } = await api.get(`/payments/intents/${intentId}/`)
     if (data.status === 'succeeded') {
-      payResult.value = { ok: true, text: `Оплата ${data.amount} ₽ прошла. Спасибо!` }
+      payResult.value = { ok: true, text: `Оплата ${rub(data.amount)} прошла. Спасибо!` }
     } else if (data.status === 'pending') {
       // Провайдер мог ещё не прислать уведомление — это нормально,
       // деньги подтверждаются вебхуком, а не возвратом на страницу.
