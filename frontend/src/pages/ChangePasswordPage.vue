@@ -91,7 +91,7 @@
             @click="$router.back()"
           />
           <q-btn
-            color="green-8"
+            color="primary"
             label="Сохранить"
             unelevated
             :loading="saving"

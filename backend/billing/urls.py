@@ -1,3 +1,4 @@
+from django.urls import path
 from rest_framework.routers import DefaultRouter
 from .views import (
     BankStatementViewSet,
@@ -5,6 +6,7 @@ from .views import (
     BillingPeriodViewSet,
     ChargeTypeViewSet,
     ChargeViewSet,
+    DashboardView,
     PaymentViewSet,
 )
 
@@ -17,4 +19,6 @@ router.register("billing/statements", BankStatementViewSet, basename="bank-state
 router.register("billing/transactions", BankTransactionViewSet,
                 basename="bank-transaction")
 
-urlpatterns = router.urls
+urlpatterns = router.urls + [
+    path("dashboard/", DashboardView.as_view(), name="dashboard"),
+]

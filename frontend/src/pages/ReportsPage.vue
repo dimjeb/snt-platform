@@ -24,8 +24,8 @@
               <div class="text-caption text-grey-7">Сводный Excel с суммами долгов по участкам</div>
             </div>
             <div>
-              <q-btn flat icon="download" color="green-8" :loading="downloading.debt" @click="downloadReport('debt')" />
-              <q-btn flat icon="email" color="blue-8" :loading="emailing.debt" @click="emailReport('debt')" />
+              <q-btn flat icon="download" color="primary" :loading="downloading.debt" @click="downloadReport('debt')" />
+              <q-btn flat icon="email" color="primary" :loading="emailing.debt" @click="emailReport('debt')" />
             </div>
           </div>
         </q-card-section>
@@ -40,8 +40,8 @@
               <div class="text-caption text-grey-7">Список платежей за период</div>
             </div>
             <div>
-              <q-btn flat icon="download" color="green-8" :loading="downloading.receipts" @click="downloadReport('receipts')" />
-              <q-btn flat icon="email" color="blue-8" :loading="emailing.receipts" @click="emailReport('receipts')" />
+              <q-btn flat icon="download" color="primary" :loading="downloading.receipts" @click="downloadReport('receipts')" />
+              <q-btn flat icon="email" color="primary" :loading="emailing.receipts" @click="emailReport('receipts')" />
             </div>
           </div>
         </q-card-section>
@@ -56,8 +56,8 @@
               <div class="text-caption text-grey-7">Список членов СНТ с участками</div>
             </div>
             <div>
-              <q-btn flat icon="download" color="green-8" :loading="downloading.members" @click="downloadReport('members')" />
-              <q-btn flat icon="email" color="blue-8" :loading="emailing.members" @click="emailReport('members')" />
+              <q-btn flat icon="download" color="primary" :loading="downloading.members" @click="downloadReport('members')" />
+              <q-btn flat icon="email" color="primary" :loading="emailing.members" @click="emailReport('members')" />
             </div>
           </div>
         </q-card-section>
@@ -73,7 +73,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="green-8" label="Отправить" :loading="sendingEmail" @click="sendEmail" />
+          <q-btn unelevated color="primary" label="Отправить" :loading="sendingEmail" @click="sendEmail" />
         </q-card-actions>
       </q-card>
     </q-dialog>

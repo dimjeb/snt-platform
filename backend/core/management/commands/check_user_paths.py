@@ -438,6 +438,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("НОВЫЙ СЧЁТЧИК: ПОКАЗАНИЕ И ДОЛГ"))
         self._check_meter_opening(c, CH, ME)
 
+        # ---------------- Главная правления ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("ГЛАВНАЯ ПРАВЛЕНИЯ"))
+        self._check_dashboard(c, CH, ME)
+
         # ---------------- Электроэнергия ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("ЭЛЕКТРОЭНЕРГИЯ"))
         self._check_electricity_gaps()
@@ -1836,6 +1840,54 @@ class Command(BaseCommand):
         self.verify("смета и выгрузка: рядовому члену закрыты",
                     r.status_code == 403 and r2.status_code == 403,
                     f"{r.status_code} {r2.status_code}")
+
+    def _check_dashboard(self, c, chairman_headers, member_headers):
+        """
+        Главная отвечает на «что сделать сейчас», а долг в сводке считается
+        по всем начислениям — раньше брался один открытый период, и долг
+        за прошлые годы с главной пропадал.
+        """
+        import datetime as dt
+        from decimal import Decimal
+
+        from billing.models import BankStatement, BankTransaction, Charge
+        from members.models import Plot
+
+        org = self._fixture_org
+        r = c.get("/api/dashboard/", **member_headers)
+        self.verify("главная правления: член СНТ не получает", r.status_code == 403,
+                    f"HTTP {r.status_code}")
+
+        st = BankStatement.objects.create(organization=org, file_name="dash.txt")
+        BankTransaction.objects.create(organization=org, statement=st, doc_number="DASH-1",
+                                       date=dt.date(2026, 9, 1), amount=Decimal("700"))
+        try:
+            r = c.get("/api/dashboard/", **chairman_headers)
+            data = self._json(r) or {}
+        finally:
+            st.delete()
+        summary, todo = data.get("summary") or {}, data.get("todo") or []
+
+        expected = sum((ch.debt for ch in Charge.objects.filter(organization=org)
+                        if ch.debt > 0), Decimal("0"))
+        self.verify("главная: долг всего — по всем начислениям, а не по одному периоду",
+                    r.status_code == 200 and Decimal(summary.get("total_debt", "-1")) == expected,
+                    f"HTTP {r.status_code}, {summary.get('total_debt')}, ожидалось {expected}")
+        self.verify("главная: участков столько же, сколько в реестре",
+                    summary.get("plots") == Plot.objects.filter(organization=org).count(),
+                    f"{summary.get('plots')}")
+
+        by_key = {t.get("key"): t for t in todo}
+        st_item = by_key.get("statement") or {}
+        self.verify("главная: непроведённая выписка попадает в «что сделать»",
+                    st_item.get("to") == "/statements"
+                    and "не определился" in st_item.get("detail", ""),
+                    f"{st_item}")
+        levels = [t.get("level") for t in todo]
+        self.verify("главная: сначала срочное, у каждого пункта есть куда перейти",
+                    levels == sorted(levels, key=lambda lv: lv != "attention")
+                    and all(t.get("to", "").startswith("/") and t.get("action") for t in todo),
+                    f"{levels}")
 
     def _check_security_holes(self, c, chairman_headers):
         """

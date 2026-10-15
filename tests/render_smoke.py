@@ -213,6 +213,16 @@ with sync_playwright() as pw:
     page.get_by_role("button", name="Войти").click()
     page.wait_for_url("**/dashboard", timeout=15000)
 
+    # Главная правления: «что сделать сейчас» со ссылками туда, где это
+    # решается, и сводка долга по всем начислениям.
+    page.wait_for_timeout(2000)
+    dash = body_text(page)
+    verify("главная правления: «Что сделать сейчас»",
+           "Что сделать сейчас" in dash and "Долг всего" in dash, dash[:200])
+    verify("главная правления: у фикстуры есть просрочка",
+           "просрочил" in dash and page.locator(".dash-todo__action").count() > 0,
+           dash[:300])
+
     page.goto(f"{BASE}/members", wait_until="networkidle")
     page.wait_for_timeout(1500)
     page.get_by_text("Бездоступов").first.click()
@@ -251,12 +261,14 @@ with sync_playwright() as pw:
            "Членский взнос" in debt_text and "долг 1" in debt_text,
            debt_text[debt_text.find("Проверкин"):][:200])
 
-    page.get_by_role("button", name="Начислить пени").click()
+    page.locator(".q-btn-dropdown", has_text="Начислить").click()
+    page.wait_for_timeout(400)
+    page.locator(".q-menu .q-item", has_text="Пени за просрочку").click()
     page.wait_for_timeout(800)
     confirm = body_text(page)
     verify("перед начислением пеней спрашивают подтверждение",
            "от остатка долга" in confirm, confirm[:160])
-    page.get_by_role("button", name="Начислить", exact=True).click()
+    page.locator(".q-dialog").get_by_role("button", name="Начислить", exact=True).click()
     page.wait_for_timeout(2500)
     verify("пени начислены кнопкой",
            "Начислено пеней" in body_text(page), body_text(page)[:160])
@@ -312,7 +324,9 @@ with sync_playwright() as pw:
     # 8б. Срок оплаты у уже созданных начислений — разом всем участкам.
     page.get_by_role("tab", name="Долги").click()
     page.wait_for_timeout(800)
-    page.get_by_role("button", name="Срок оплаты").click()
+    page.get_by_role("button", name="Ещё").click()
+    page.wait_for_timeout(400)
+    page.locator(".q-menu .q-item", has_text="Срок оплаты").click()
     page.wait_for_timeout(800)
     page.get_by_label("Вид начисления *").click()
     page.wait_for_timeout(400)

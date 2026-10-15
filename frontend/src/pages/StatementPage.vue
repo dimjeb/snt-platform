@@ -5,7 +5,7 @@
       <q-space />
       <q-btn
         icon="upload_file"
-        color="green-8"
+        color="primary"
         label="Загрузить"
         unelevated
         @click="uploadDialog = true"
@@ -83,7 +83,7 @@
               Разделено: {{ allocationText(t) }}
             </q-item-label>
             <q-item-label v-if="statement.status !== 'applied'" caption>
-              <q-btn flat dense size="sm" color="blue-8" icon="call_split"
+              <q-btn flat dense size="sm" color="primary" icon="call_split"
                      :label="t.allocation && t.allocation.length ? 'Изменить разделение' : 'Разделить по категориям'"
                      @click="openSplit(t)" />
             </q-item-label>
@@ -118,7 +118,7 @@
       <q-card-actions align="right" class="q-pa-md">
         <q-btn
           v-if="statement.status !== 'applied'"
-          color="green-8"
+          color="primary"
           icon="done_all"
           :label="`Провести ${summary.matched} платежей`"
           unelevated
@@ -171,7 +171,7 @@
             </div>
           </div>
           <q-btn v-if="splitParts.length < 3" flat dense size="sm" icon="add"
-                 label="Ещё категория" color="blue-8"
+                 label="Ещё категория" color="primary"
                  @click="addSplitPart" />
           <div class="text-caption"
                :class="splitRest < 0 ? 'text-negative' : 'text-grey-8'">
@@ -193,7 +193,7 @@
           <q-btn flat label="Убрать разделение" color="grey-8"
                  @click="splitParts = []; saveSplit()" />
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="blue-8" label="Сохранить" unelevated
+          <q-btn color="primary" label="Сохранить" unelevated
                  :disable="splitRest < 0 || !splitPartsValid"
                  @click="saveSplit" />
         </q-card-actions>
@@ -227,7 +227,7 @@
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
           <q-btn
-            color="green-8"
+            color="primary"
             label="Разобрать"
             unelevated
             :loading="uploading"

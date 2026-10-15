@@ -239,7 +239,7 @@
 
         <div class="q-mx-md q-mb-sm">
           <q-btn
-            outline color="green-8" icon="add_business" class="full-width"
+            outline color="primary" icon="add_business" class="full-width"
             label="Мастер нового садоводства" to="/setup" @click="orgDialog = false"
           />
         </div>

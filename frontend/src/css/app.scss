@@ -151,3 +151,50 @@ body {
     max-width: 1100px;
   }
 }
+
+// ── Кнопки ──
+// Одна система на весь сайт:
+//   главное действие на экране — unelevated color="primary";
+//   второстепенное — outline color="primary";
+//   ссылка/действие в строке — flat color="primary";
+//   удаление и отмена — color="negative".
+// Подписи — обычным регистром: КАПСОМ на телефоне читается хуже
+// и делает кнопки вдвое шире.
+.q-btn, .q-tab {
+  text-transform: none;
+  letter-spacing: normal;
+}
+// В тёмной теме тёмно-зелёный на тёмном не читается.
+.body--dark {
+  --q-primary: #52b788;
+  --q-positive: #52b788;
+}
+
+// ── Главная правления ──
+.dash-todo__action { margin-left: -8px; }
+.dash-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+.dash-stat {
+  border: 1px solid rgba(0,0,0,0.12);
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+.body--dark .dash-stat { border-color: rgba(255,255,255,0.12); }
+.dash-stat__value {
+  font-size: 18px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.dash-stat__label {
+  font-size: 12px;
+  opacity: 0.7;
+}
+.dash-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}

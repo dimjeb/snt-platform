@@ -1,6 +1,7 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from core.permissions import (
     IsTreasurer, OrgQuerysetMixin, require_org,
 )
@@ -493,3 +494,12 @@ class BankTransactionViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
         if "plot" in serializer.validated_data:
             instance.match_kind = BankTransaction.MATCH_MANUAL
             instance.save(update_fields=["match_kind", "updated_at"])
+
+
+class DashboardView(APIView):
+    """Главная правления: сводка и «что сделать сейчас» (billing/dashboard.py)."""
+    permission_classes = [IsTreasurer]
+
+    def get(self, request):
+        from .dashboard import build_dashboard
+        return Response(build_dashboard(require_org(request)))

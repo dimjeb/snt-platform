@@ -1,44 +1,45 @@
 <template>
   <q-page class="q-pa-md">
-    <!-- Карточки статистики (только для управления) -->
-    <div v-if="!auth.isMember" class="row q-col-gutter-md q-mb-md">
-      <div class="col-6">
-        <q-card flat bordered>
-          <q-card-section class="text-center">
-            <q-icon name="people" size="32px" color="green-8" />
-            <div class="text-h5 text-weight-bold">{{ stats.members }}</div>
-            <div class="text-caption text-grey-7">Членов</div>
-          </q-card-section>
-        </q-card>
+    <!-- Главная правления: что сделать сейчас + короткая сводка -->
+    <template v-if="!auth.isMember && dashState !== 'none'">
+      <div class="text-subtitle1 text-weight-medium q-mb-sm">Что сделать сейчас</div>
+      <q-card flat bordered class="q-mb-md">
+        <q-card-section v-if="dashState === 'loading'" class="row justify-center">
+          <q-spinner color="primary" size="24px" />
+        </q-card-section>
+        <q-list v-else-if="dash.todo.length" separator>
+          <q-item v-for="t in dash.todo" :key="t.key" class="dash-todo">
+            <q-item-section avatar top>
+              <q-icon
+                :name="t.level === 'attention' ? 'error_outline' : 'info_outline'"
+                :color="t.level === 'attention' ? 'negative' : 'grey-6'"
+              />
+            </q-item-section>
+            <q-item-section>
+              <q-item-label class="text-weight-medium">{{ t.title }}</q-item-label>
+              <q-item-label caption>{{ t.detail }}</q-item-label>
+              <div>
+                <q-btn
+                  flat dense color="primary" class="q-mt-xs dash-todo__action"
+                  :label="t.action" icon-right="chevron_right" :to="t.to"
+                />
+              </div>
+            </q-item-section>
+          </q-item>
+        </q-list>
+        <q-card-section v-else class="row items-center no-wrap text-grey-8">
+          <q-icon name="check_circle" color="positive" size="24px" class="q-mr-sm" />
+          Срочных дел нет: выписка проведена, просрочек нет.
+        </q-card-section>
+      </q-card>
+
+      <div v-if="dashState === 'ready'" class="dash-stats q-mb-md">
+        <div v-for="s in summaryItems" :key="s.label" class="dash-stat">
+          <div class="dash-stat__value">{{ s.value }}</div>
+          <div class="dash-stat__label">{{ s.label }}</div>
+        </div>
       </div>
-      <div class="col-6">
-        <q-card flat bordered>
-          <q-card-section class="text-center">
-            <q-icon name="landscape" size="32px" color="blue-8" />
-            <div class="text-h5 text-weight-bold">{{ stats.plots }}</div>
-            <div class="text-caption text-grey-7">Участков</div>
-          </q-card-section>
-        </q-card>
-      </div>
-      <div class="col-6">
-        <q-card flat bordered>
-          <q-card-section class="text-center">
-            <q-icon name="warning" size="32px" color="negative" />
-            <div class="text-h5 text-weight-bold">{{ stats.debtors }}</div>
-            <div class="text-caption text-grey-7">Должников</div>
-          </q-card-section>
-        </q-card>
-      </div>
-      <div class="col-6">
-        <q-card flat bordered>
-          <q-card-section class="text-center">
-            <q-icon name="payments" size="32px" color="orange-8" />
-            <div class="text-h5 text-weight-bold">{{ formatMoney(stats.totalDebt) }}</div>
-            <div class="text-caption text-grey-7">Долг (₽)</div>
-          </q-card-section>
-        </q-card>
-      </div>
-    </div>
+    </template>
 
     <!-- Личный кабинет члена -->
     <div v-if="auth.isMember || auth.hasOwnCabinet">
@@ -165,7 +166,7 @@
 
           <div class="row items-center q-mt-md q-mb-sm">
             <q-btn
-              flat dense size="sm" color="green-8"
+              flat dense size="sm" color="primary"
               label="Весь долг"
               @click="fillAll"
             />
@@ -182,7 +183,7 @@
 
           <q-btn
             v-if="onlineAvailable"
-            color="green-8"
+            color="primary"
             icon="payments"
             :label="payTotal > 0 ? `Оплатить ${formatMoney(payTotal)} ₽` : 'Оплатить'"
             class="full-width"
@@ -195,7 +196,7 @@
             Онлайн-оплата в этом СНТ не подключена — обратитесь к казначею.
           </div>
           <q-btn
-            color="blue-8"
+            color="primary"
             icon="qr_code_2"
             label="Оплатить по QR из банка"
             class="full-width q-mt-sm"
@@ -292,7 +293,7 @@
                 </q-item-section>
               </q-item>
             </q-list>
-            <q-btn flat dense size="sm" color="blue-8" icon="content_copy"
+            <q-btn flat dense size="sm" color="primary" icon="content_copy"
                    label="Скопировать все реквизиты одним текстом"
                    class="q-mt-xs" @click="copyAll" />
             <!-- Без номера участка казначей не опознает платёж в выписке -->
@@ -340,48 +341,12 @@
       </q-card>
     </div>
 
-    <!-- Быстрые ссылки -->
-    <div class="row q-col-gutter-sm">
-      <div class="col-6" v-if="!auth.isMember">
-        <q-btn
-          outline
-          color="green-8"
-          icon="receipt_long"
-          label="Начисления"
-          class="full-width"
-          to="/billing"
-        />
-      </div>
-      <div class="col-6" v-if="!auth.isMember">
-        <q-btn
-          outline
-          color="orange-8"
-          icon="bolt"
-          label="Электроэнергия"
-          class="full-width"
-          to="/electricity"
-        />
-      </div>
-      <div class="col-12">
-        <q-btn
-          outline
-          color="blue-8"
-          icon="speed"
-          label="Передать показания счётчика"
-          class="full-width"
-          to="/meter-reading"
-        />
-      </div>
-      <div class="col-12" v-if="!auth.isMember">
-        <q-btn
-          outline
-          color="purple-8"
-          icon="bar_chart"
-          label="Отчёты"
-          class="full-width"
-          to="/reports"
-        />
-      </div>
+    <!-- Разделы -->
+    <div class="dash-links">
+      <q-btn
+        v-for="l in links" :key="l.to"
+        outline color="primary" align="left" :icon="l.icon" :label="l.label" :to="l.to"
+      />
     </div>
   </q-page>
 </template>
@@ -397,7 +362,34 @@ const auth = useAuthStore()
 const route = useRoute()
 const $q = useQuasar()
 
-const stats = ref({ members: 0, plots: 0, debtors: 0, totalDebt: 0 })
+// Главная правления (GET /dashboard/): loading → ready, либо none —
+// у администратора платформы без своего СНТ главной правления нет.
+const dash = ref({ summary: {}, todo: [] })
+const dashState = ref('loading')
+
+const summaryItems = computed(() => {
+  const s = dash.value.summary
+  return [
+    { label: 'Участков', value: s.plots },
+    { label: 'Членов', value: s.members },
+    { label: 'Должников', value: s.debtors },
+    { label: 'Долг всего', value: `${formatMoney(s.total_debt)} ₽` },
+    { label: `Собрано за ${s.year}`, value: `${formatMoney(s.collected_year)} ₽` },
+  ]
+})
+
+const links = computed(() => {
+  const own = auth.isMember || auth.hasOwnCabinet
+  const all = [
+    { to: '/billing', icon: 'receipt_long', label: 'Начисления', manage: true },
+    { to: '/statements', icon: 'account_balance', label: 'Банковская выписка', manage: true },
+    { to: '/electricity', icon: 'bolt', label: 'Электроэнергия', manage: true },
+    { to: '/budget', icon: 'request_quote', label: 'Смета и расходы', manage: true },
+    { to: '/reports', icon: 'bar_chart', label: 'Отчёты', manage: true },
+    { to: '/meter-reading', icon: 'speed', label: 'Передать показания счётчика', own: true },
+  ]
+  return all.filter((l) => (l.manage && !auth.isMember) || (l.own && own))
+})
 const myDebts = ref([])
 const myDebtTotal = ref(0)
 const electricityDebt = ref(0)
@@ -653,24 +645,12 @@ onMounted(async () => {
   }
   if (!auth.isMember) {
     try {
-      const [members, plots] = await Promise.all([
-        api.get('/members/?page_size=1'),
-        api.get('/plots/?page_size=1'),
-      ])
-      stats.value.members = members.data.count || 0
-      stats.value.plots = plots.data.count || 0
-
-      // Долги — через открытый период
-      const periods = await api.get('/billing/periods/?status=open&page_size=1')
-      if (periods.data.results?.length) {
-        const pid = periods.data.results[0].id
-        const debt = await api.get(`/billing/periods/${pid}/debt_summary/`)
-        const debtors = debt.data.filter((d) => d.debt > 0)
-        stats.value.debtors = debtors.length
-        stats.value.totalDebt = debtors.reduce((s, d) => s + Number(d.debt), 0)
-      }
+      const { data } = await api.get('/dashboard/')
+      dash.value = data
+      dashState.value = 'ready'
     } catch (e) {
-      console.error(e)
+      dashState.value = 'none'
+      if (e.response?.status !== 400 && e.response?.status !== 403) console.error(e)
     }
   }
 })

@@ -36,7 +36,7 @@
           <q-input v-model="org.bank_name" label="Банк" outlined dense class="col-12" />
         </div>
         <q-stepper-navigation>
-          <q-btn color="green-8" label="Дальше" :disable="!org.name.trim()" @click="step = 2" />
+          <q-btn unelevated color="primary" label="Дальше" :disable="!org.name.trim()" @click="step = 2" />
         </q-stepper-navigation>
       </q-step>
 
@@ -66,7 +66,7 @@
             {{ formError }}
           </q-banner>
           <q-stepper-navigation>
-            <q-btn color="green-8" icon="check" label="Создать садоводство" :loading="saving"
+            <q-btn unelevated color="primary" icon="check" label="Создать садоводство" :loading="saving"
                    :disable="!canCreate" @click="create" />
             <q-btn flat label="Назад" class="q-ml-sm" @click="step = 1" />
           </q-stepper-navigation>
@@ -80,7 +80,7 @@
           </q-banner>
           <AccountsCard :accounts="accounts" />
           <q-stepper-navigation>
-            <q-btn color="green-8" label="Дальше" @click="step = 3" />
+            <q-btn unelevated color="primary" label="Дальше" @click="step = 3" />
           </q-stepper-navigation>
         </template>
       </q-step>
@@ -94,10 +94,10 @@
           Загружено: {{ imp.result }}
         </div>
         <q-stepper-navigation>
-          <q-btn outline color="green-8" icon="upload_file"
+          <q-btn outline color="primary" icon="upload_file"
                  :label="imp.done ? 'Загрузить ещё файл' : 'Загрузить из Excel'"
                  @click="openImport(imp)" />
-          <q-btn color="green-8" :label="imp.done ? 'Дальше' : 'Пропустить'" class="q-ml-sm"
+          <q-btn unelevated color="primary" :label="imp.done ? 'Дальше' : 'Пропустить'" class="q-ml-sm"
                  @click="step = imp.step + 1" />
         </q-stepper-navigation>
       </q-step>
@@ -111,7 +111,7 @@
           </li>
         </ul>
         <AccountsCard :accounts="accounts" class="q-mb-md" />
-        <q-btn color="green-8" icon="arrow_forward" label="Перейти в садоводство" @click="finish" />
+        <q-btn unelevated color="primary" icon="arrow_forward" label="Перейти в садоводство" @click="finish" />
       </q-step>
     </q-stepper>
 

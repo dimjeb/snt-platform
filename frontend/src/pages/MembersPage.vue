@@ -3,9 +3,9 @@
     <div class="row items-center q-mb-md">
       <div class="text-h6">Члены СНТ</div>
       <q-space />
-      <q-btn icon="upload_file" color="green-8" flat no-caps label="Загрузить из Excel"
+      <q-btn icon="upload_file" color="primary" flat no-caps label="Загрузить из Excel"
              class="q-mr-xs" @click="importDialog = true" />
-      <q-btn icon="add" color="green-8" round flat @click="openCreate" />
+      <q-btn icon="add" color="primary" round flat @click="openCreate" />
     </div>
 
     <q-input v-model="search" outlined dense placeholder="Поиск по ФИО, телефону..." class="q-mb-md" clearable>
@@ -81,7 +81,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="green-8" label="Сохранить" :loading="saving" @click="save" />
+          <q-btn unelevated color="primary" label="Сохранить" :loading="saving" @click="save" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -122,7 +122,7 @@
 
         <q-card-actions align="right">
           <q-btn flat icon="content_copy" label="Скопировать" @click="copyIssued" />
-          <q-btn color="green-8" unelevated label="Готово" v-close-popup />
+          <q-btn color="primary" unelevated label="Готово" v-close-popup />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -177,13 +177,13 @@
         <q-card-section v-if="auth.isChairman" class="q-pt-none">
           <q-btn
             v-if="!selected.account"
-            outline color="green-8" icon="key" class="full-width"
+            outline color="primary" icon="key" class="full-width"
             label="Выдать доступ" :loading="accessLoading"
             @click="grantAccess(selected)"
           />
           <q-btn
             v-else
-            outline color="orange-8" icon="lock_reset" class="full-width"
+            outline color="primary" icon="lock_reset" class="full-width"
             label="Сбросить пароль" :loading="accessLoading"
             @click="confirmReset(selected)"
           />
@@ -192,7 +192,7 @@
         <q-card-actions align="right">
           <q-btn flat label="Закрыть" v-close-popup />
           <q-btn flat color="negative" icon="delete" @click="confirmDelete(selected)" />
-          <q-btn flat color="green-8" icon="edit" label="Изменить" @click="openEdit(selected)" />
+          <q-btn flat color="primary" icon="edit" label="Изменить" @click="openEdit(selected)" />
         </q-card-actions>
       </q-card>
     </q-dialog>

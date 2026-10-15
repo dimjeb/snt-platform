@@ -5,7 +5,7 @@
       <q-space />
       <q-select v-model="year" :options="yearOptions" dense outlined emit-value map-options
                 label="Год" style="min-width:120px" @update:model-value="loadBudget" />
-      <q-btn outline color="green-8" icon="add" label="Новая смета" @click="openNewBudget" />
+      <q-btn outline color="primary" icon="add" label="Новая смета" @click="openNewBudget" />
     </div>
 
     <q-tabs v-model="tab" dense align="left" active-color="green-8" indicator-color="green-8"
@@ -73,9 +73,9 @@
               <q-icon name="warning" /> {{ w }}
             </q-card-section>
             <q-card-actions>
-              <q-btn v-if="!approved && auth.isChairman" color="green-8" icon="gavel" label="Утвердить (по решению собрания)" @click="approveDialog = true" />
+              <q-btn unelevated v-if="!approved && auth.isChairman" color="primary" icon="gavel" label="Утвердить (по решению собрания)" @click="approveDialog = true" />
               <q-btn v-if="approved && auth.isChairman" flat color="grey-8" icon="undo" label="Вернуть в черновик" @click="unapprove" />
-              <q-btn v-if="approved" outline color="green-8" icon="playlist_add" label="Начислить членский взнос по смете" @click="chargeDialog = true" />
+              <q-btn v-if="approved" outline color="primary" icon="playlist_add" label="Начислить членский взнос по смете" @click="chargeDialog = true" />
               <q-space />
               <q-btn v-if="!approved" flat color="negative" icon="delete" label="Удалить смету" @click="deleteBudget" />
             </q-card-actions>
@@ -85,7 +85,7 @@
             <div class="row items-center q-mb-xs">
               <div class="text-subtitle1">{{ sec.label }}</div>
               <q-space />
-              <q-btn v-if="!approved" flat dense no-caps color="green-8" icon="add" label="Статья" @click="openItem(null, sec.value)" />
+              <q-btn v-if="!approved" flat dense no-caps color="primary" icon="add" label="Статья" @click="openItem(null, sec.value)" />
             </div>
             <q-markup-table flat bordered dense separator="cell">
               <thead>
@@ -113,7 +113,7 @@
       <!-- Расходы -->
       <q-tab-panel name="expenses" class="q-pa-none">
         <div class="row q-mb-sm">
-          <q-btn color="green-8" icon="add" label="Добавить расход" @click="openExpense" />
+          <q-btn unelevated color="primary" icon="add" label="Добавить расход" @click="openExpense" />
         </div>
         <q-markup-table flat bordered dense>
           <thead><tr><th class="text-left">Дата</th><th class="text-right">Сумма</th><th class="text-left">Статья</th>
@@ -178,7 +178,7 @@
         <div class="row q-gutter-sm items-center">
           <q-input v-model="accFrom" type="date" label="С" outlined dense />
           <q-input v-model="accTo" type="date" label="По" outlined dense />
-          <q-btn color="green-8" icon="download" label="Скачать выгрузку"
+          <q-btn unelevated color="primary" icon="download" label="Скачать выгрузку"
                  @click="download(`/reports/accounting/?date_from=${accFrom}&date_to=${accTo}`, `Для бухгалтера ${accFrom}—${accTo}.xlsx`)" />
         </div>
       </q-tab-panel>
@@ -195,7 +195,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="green-8" label="Создать" :loading="saving" @click="createBudget" />
+          <q-btn unelevated color="primary" label="Создать" :loading="saving" @click="createBudget" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -219,7 +219,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="green-8" label="Сохранить" :loading="saving" @click="saveItem" />
+          <q-btn unelevated color="primary" label="Сохранить" :loading="saving" @click="saveItem" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -235,7 +235,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="green-8" label="Утвердить" :disable="!approveForm.approved_at" :loading="saving" @click="approve" />
+          <q-btn unelevated color="primary" label="Утвердить" :disable="!approveForm.approved_at" :loading="saving" @click="approve" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -254,7 +254,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="green-8" label="Начислить" :loading="saving" @click="chargeMembership" />
+          <q-btn unelevated color="primary" label="Начислить" :loading="saving" @click="chargeMembership" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -274,7 +274,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="green-8" label="Сохранить" :loading="saving" @click="saveExpense" />
+          <q-btn unelevated color="primary" label="Сохранить" :loading="saving" @click="saveExpense" />
         </q-card-actions>
       </q-card>
     </q-dialog>

@@ -24,6 +24,18 @@ export default configure(function (/* ctx */) {
     framework: {
       config: {
         dark: 'auto',
+        // Единая палитра: один зелёный цвет действия (как шапка),
+        // красный — только для удаления и отмены. Цветные кнопки
+        // «по разделам» (зелёная, синяя, оранжевая…) больше не используются.
+        brand: {
+          primary: '#2d6a4f',
+          secondary: '#40916c',
+          accent: '#b7791f',
+          positive: '#2d6a4f',
+          negative: '#c0392b',
+          warning: '#e0a100',
+          info: '#3a6ea5',
+        },
       },
       plugins: ['Notify', 'Dialog', 'Loading', 'LocalStorage'],
     },
