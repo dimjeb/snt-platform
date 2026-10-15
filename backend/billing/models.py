@@ -96,6 +96,12 @@ class Charge(OrgModel):
     )
     amount = models.DecimalField("Сумма", max_digits=12, decimal_places=2)
     description = models.CharField("Описание", max_length=500, blank=True)
+    # Кто начислил вручную (разовое начисление). У массовых и расчётных —
+    # пусто: их происхождение видно по описанию и виду начисления.
+    created_by = models.ForeignKey(
+        "accounts.User", verbose_name="Начислил", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="+",
+    )
     due_date = models.DateField("Оплатить до", null=True, blank=True)
     penalty_percent = models.DecimalField(
         "Пени за просрочку, %", max_digits=5, decimal_places=2,

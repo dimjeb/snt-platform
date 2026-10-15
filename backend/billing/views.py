@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -9,6 +11,7 @@ from .models import ChargeType, BillingPeriod, Charge, Payment, Receipt
 from .serializers import (
     ChargeTypeSerializer, BillingPeriodSerializer, ChargeSerializer,
     PaymentSerializer, BulkMembershipChargeSerializer, BulkTargetChargeSerializer,
+    OneOffChargeSerializer,
 )
 from django.db.models import Count
 
@@ -27,6 +30,8 @@ from .services import (
 from .statement import StatementError
 from core.xlsx import import_response, template_response
 from . import debt_import
+
+log = logging.getLogger(__name__)
 from .statement_service import (
     StatementImportError,
     apply_statement,
@@ -132,9 +137,58 @@ class ChargeViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     # берёт из /payments/my-debt/, где выборка идёт от его собственных
     # участков. Страница «Начисления» открыта только правлению.
     permission_classes = [IsTreasurer]
+    # Без put/patch: правка суммы начисления, по которому уже платили,
+    # тихо переписала бы историю. Ошибку исправляют удалением неоплаченного
+    # начисления или переносом оплаты.
+    http_method_names = ["get", "post", "delete", "head", "options"]
 
-    def perform_create(self, serializer):
-        serializer.save(organization=require_org(self.request))
+    def create(self, request, *args, **kwargs):
+        return Response(
+            {"detail": "Начисления создаются действиями: массовое — "
+                       "create_membership_charges / create_target_charges, "
+                       "одному участку — one-off."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    @action(detail=False, methods=["post"], url_path="one-off")
+    def one_off(self, request):
+        """Разовое начисление одному участку (штраф, забытый долг, работы)."""
+        org = require_org(request)
+        ser = OneOffChargeSerializer(data=request.data, context={"org": org})
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+        fields = {k: data[k] for k in ("period", "plot", "charge_type", "amount")}
+        fields["description"] = data["description"].strip()
+        fields["due_date"] = data.get("due_date")
+        if data.get("penalty_percent") is not None:
+            fields["penalty_percent"] = data["penalty_percent"]
+        charge = Charge.objects.create(organization=org, created_by=request.user, **fields)
+        log.info("Разовое начисление #%s: org=%s участок %s, %s ₽, %s, начислил user=%s",
+                 charge.pk, org.pk, charge.plot.number, charge.amount,
+                 charge.charge_type.name, request.user.pk)
+        return Response(ChargeSerializer(charge).data, status=status.HTTP_201_CREATED)
+
+    def perform_destroy(self, instance):
+        """
+        Удалить можно только начисление, к которому деньги ещё не
+        прикасались: ни платежей (даже отменённых — они держат историю),
+        ни зачтённого аванса, ни начисленных по нему пеней.
+        """
+        from rest_framework.exceptions import ValidationError
+
+        if instance.payments.exists():
+            raise ValidationError(
+                "По начислению уже были платежи — удалить его нельзя. "
+                "Ошиблись — перенесите оплату на другое начисление.")
+        if instance.credit_entries.exists():
+            raise ValidationError(
+                "В начисление зачтён аванс — удалить его нельзя.")
+        if Charge.objects.filter(penalty_for=instance).exists():
+            raise ValidationError(
+                "По начислению начислены пени — сначала удалите их.")
+        log.warning("Удалено начисление #%s: org=%s участок %s, %s ₽, %s, удалил user=%s",
+                    instance.pk, instance.organization_id, instance.plot.number,
+                    instance.amount, instance.charge_type.name, self.request.user.pk)
+        instance.delete()
 
     @action(detail=False, methods=["post"], url_path="import")
     def import_xlsx(self, request):

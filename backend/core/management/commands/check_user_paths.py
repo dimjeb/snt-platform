@@ -23,6 +23,12 @@ class _Rollback(Exception):
     """Служебное исключение: откатывает транзакцию проверки."""
 
 
+def period_date(period):
+    """Дата внутри периода — для платежей в проверках."""
+    import datetime as dt
+    return dt.date(period.year, period.month or 1, 15)
+
+
 class Command(BaseCommand):
     help = "Проверить пользовательские пути всех ролей через API"
 
@@ -445,6 +451,10 @@ class Command(BaseCommand):
         # ---------------- Выписка: частичное проведение и пропуск строк ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("ВЫПИСКА: ДОПРОВЕДЕНИЕ И ПРОПУСК"))
         self._check_statement_partial(c, CH)
+
+        # ---------------- Разовое начисление ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("РАЗОВОЕ НАЧИСЛЕНИЕ"))
+        self._check_one_off_charge(c, CH, ME)
 
         # ---------------- Электроэнергия ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("ЭЛЕКТРОЭНЕРГИЯ"))
@@ -1996,6 +2006,113 @@ class Command(BaseCommand):
         self.verify("выписку с проведёнными строками не удалить",
                     r.status_code == 400 and BankStatement.objects.filter(pk=sid).exists(),
                     f"HTTP {r.status_code}")
+
+    def _check_one_off_charge(self, c, chairman_headers, member_headers):
+        """
+        Разовое начисление одному участку — отдельное действие с проверками.
+        Общий POST/PATCH начислений закрыт: он принимал любые поля, в том
+        числе участок и период чужого товарищества.
+        """
+        import json as _json
+        from decimal import Decimal
+
+        from billing.models import BillingPeriod, Charge, ChargeType, Payment
+        from members.models import Plot
+
+        org = self._fixture_org
+        period = BillingPeriod.objects.filter(organization=org).order_by("-year").first()
+        plot = Plot.objects.filter(organization=org).order_by("number").first()
+        fine, _ = ChargeType.objects.get_or_create(
+            organization=org, name="Штраф по решению правления",
+            defaults={"category": ChargeType.TYPE_OTHER})
+        elec = ChargeType.objects.filter(organization=org,
+                                         category=ChargeType.TYPE_ELECTRICITY).first()
+        alien_plot = Plot.objects.create(organization=self._other_org, number="ЧУЖ-1")
+
+        def post(payload, headers=chairman_headers):
+            return c.post("/api/billing/charges/one-off/", data=_json.dumps(payload),
+                          content_type="application/json", **headers)
+
+        base = {"period": period.pk, "plot": plot.pk, "charge_type": fine.pk,
+                "amount": "1500.00", "description": "сжигание мусора, протокол №5",
+                "due_date": "2026-11-30"}
+        r = post(base)
+        data = self._json(r) or {}
+        charge = Charge.objects.filter(pk=data.get("id")).first()
+        self.verify("разовое начисление создаётся одному участку",
+                    r.status_code == 201 and charge is not None
+                    and charge.plot_id == plot.pk and charge.amount == Decimal("1500.00")
+                    and charge.organization_id == org.pk,
+                    f"HTTP {r.status_code}")
+        self.verify("у разового начисления записано, кто начислил",
+                    charge is not None and charge.created_by_id is not None
+                    and data.get("created_by_name"), f"{data.get('created_by_name')}")
+        self.verify("срок оплаты сохранён, пени по умолчанию 20 %",
+                    charge is not None and str(charge.due_date) == "2026-11-30"
+                    and charge.penalty_percent == Decimal("20.00"), "")
+
+        r = post({**base, "plot": alien_plot.pk})
+        self.verify("участок чужого товарищества не принимается",
+                    r.status_code == 400 and "plot" in (self._json(r) or {}),
+                    f"HTTP {r.status_code}")
+        if elec:
+            r = post({**base, "charge_type": elec.pk})
+            self.verify("свет разовым начислением не вносится — подсказка про счётчик",
+                        r.status_code == 400 and "Показание и долг" in r.content.decode(),
+                        f"HTTP {r.status_code}")
+        r = post({**base, "description": "  "})
+        self.verify("без «за что» не начисляется", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+        r = post({**base, "amount": "0"})
+        self.verify("нулевая сумма не принимается", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+        r = post(base, headers=member_headers)
+        self.verify("рядовой член разово начислить не может", r.status_code == 403,
+                    f"HTTP {r.status_code}")
+
+        closed = BillingPeriod.objects.create(organization=org, year=2019,
+                                              status=BillingPeriod.STATUS_CLOSED)
+        r = post({**base, "period": closed.pk})
+        self.verify("в закрытый период не начисляется", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+        closed.delete()
+
+        # Общий вход закрыт.
+        r = c.post("/api/billing/charges/", data=_json.dumps({
+            "period": period.pk, "plot": alien_plot.pk, "charge_type": fine.pk,
+            "amount": "1"}), content_type="application/json", **chairman_headers)
+        self.verify("общий POST начислений закрыт", r.status_code == 405,
+                    f"HTTP {r.status_code}")
+        if charge:
+            r = c.patch(f"/api/billing/charges/{charge.pk}/",
+                        data=_json.dumps({"amount": "1"}),
+                        content_type="application/json", **chairman_headers)
+            charge.refresh_from_db()
+            self.verify("сумму начисления правкой не поменять",
+                        r.status_code == 405 and charge.amount == Decimal("1500.00"),
+                        f"HTTP {r.status_code}")
+
+        # Удаление: неоплаченное — можно, оплаченное — нет.
+        paid = post({**base, "amount": "300.00", "description": "покос травы"})
+        paid_charge = Charge.objects.get(pk=self._json(paid)["id"])
+        Payment.objects.create(organization=org, charge=paid_charge, amount=Decimal("100"),
+                               date=period_date(period), method=Payment.METHOD_CASH)
+        r = c.delete(f"/api/billing/charges/{paid_charge.pk}/", **chairman_headers)
+        self.verify("начисление с платежом не удаляется (понятная ошибка, не 500)",
+                    r.status_code == 400 and Charge.objects.filter(pk=paid_charge.pk).exists(),
+                    f"HTTP {r.status_code}")
+        if charge:
+            r = c.delete(f"/api/billing/charges/{charge.pk}/", **chairman_headers)
+            self.verify("ошибочное неоплаченное начисление удаляется",
+                        r.status_code == 204 and not Charge.objects.filter(pk=charge.pk).exists(),
+                        f"HTTP {r.status_code}")
+        alien_plot.delete()
+
+        r = c.get("/api/payments/my-debt/", **member_headers)
+        items = (self._json(r) or {}).get("charges") or (self._json(r) or {}).get("items") or []
+        self.verify("кабинет садовода отдаёт «за что» по каждому начислению",
+                    r.status_code == 200 and bool(items) and all("description" in i for i in items),
+                    f"HTTP {r.status_code}, строк {len(items)}")
 
     def _check_security_holes(self, c, chairman_headers):
         """

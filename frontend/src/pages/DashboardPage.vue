@@ -120,6 +120,10 @@
               <q-item-section>
                 <q-item-label>{{ d.charge_type_name }}</q-item-label>
                 <q-item-label caption>{{ d.period_label }} · уч. {{ d.plot_number }}</q-item-label>
+                <q-item-label v-if="d.description && d.category !== 'electricity'" caption
+                              class="text-grey-8">
+                  {{ d.description }}
+                </q-item-label>
                 <!-- Основание начисления за свет: за что именно эти деньги -->
                 <q-item-label caption v-if="d.kwh" class="text-orange-9">
                   {{ formatKwh(d.kwh) }} кВт·ч × {{ formatTariff(d.tariff) }} ₽

@@ -160,6 +160,9 @@ class MyDebtView(APIView):
                 "category": category,
                 "period_label": str(charge.period),
                 "plot_number": charge.plot.number,
+                # За что: у разового начисления (штраф, работы) без этого
+                # строка «Прочее — 1 500 ₽» человеку ничего не говорит.
+                "description": charge.description,
                 "amount": charge.amount,
                 "paid_amount": charge.paid_amount,
                 "debt": debt,

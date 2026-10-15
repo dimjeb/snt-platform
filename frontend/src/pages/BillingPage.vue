@@ -39,6 +39,13 @@
               <q-item clickable v-close-popup @click="confirmPenalties">
                 <q-item-section>Пени за просрочку</q-item-section>
               </q-item>
+              <q-separator />
+              <q-item clickable v-close-popup @click="openOneOff">
+                <q-item-section>
+                  <q-item-label>Одному участку</q-item-label>
+                  <q-item-label caption>штраф, забытый долг, работы</q-item-label>
+                </q-item-section>
+              </q-item>
             </q-list>
           </q-btn-dropdown>
           <q-btn flat color="grey-8" icon="more_horiz" label="Ещё">
@@ -131,6 +138,9 @@
                 <template v-if="c.member_name"> · {{ c.member_name }}</template>
                 · {{ c.description }}
               </q-item-label>
+              <q-item-label v-if="c.created_by_name" caption class="text-grey-7">
+                разовое · начислил(а) {{ c.created_by_name }}
+              </q-item-label>
               <q-item-label v-if="c.due_date" caption>
                 <span :class="c.is_overdue ? 'text-negative text-weight-medium' : ''">
                   Оплатить до {{ formatDate(c.due_date) }}
@@ -151,6 +161,13 @@
                 flat dense size="sm" color="primary" icon="swap_horiz"
                 label="Перенести оплату"
                 @click="openTransfer(c)"
+              />
+              <!-- Удалить можно только то, к чему деньги не прикасались:
+                   ошибочное разовое, лишние пени. Остальное сервер не даст. -->
+              <q-btn
+                v-else-if="!(c.payments && c.payments.length) && (auth.isTreasurer || auth.isChairman)"
+                flat dense size="sm" color="negative" icon="delete_outline"
+                label="Удалить" @click="deleteCharge(c)"
               />
             </q-item-section>
           </q-item>
@@ -369,6 +386,49 @@
           <q-btn unelevated color="primary" label="Изменить срок" :loading="actionLoading"
                  :disable="!dueForm.charge_type || (dueScope === 'some' && !dueForm.plot_ids.length)"
                  @click="saveDueDate" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Диалог: разовое начисление одному участку -->
+    <q-dialog v-model="oneOffDialog" persistent @show="loadPlots">
+      <q-card style="min-width:340px;max-width:480px">
+        <q-card-section class="text-h6">Начислить одному участку</q-card-section>
+        <q-card-section class="q-gutter-sm">
+          <div class="text-caption text-grey-8">Период: {{ currentPeriodLabel }}</div>
+          <q-select
+            v-model="oneOffForm.plot"
+            :options="plotOptions"
+            :loading="plotsLoading"
+            option-label="label" option-value="value"
+            emit-value map-options use-input input-debounce="0"
+            label="Участок *" outlined dense
+            @filter="filterPlots"
+          />
+          <q-select
+            v-model="oneOffForm.charge_type"
+            :options="oneOffTypeOptions"
+            emit-value map-options use-input input-debounce="0"
+            new-value-mode="add-unique"
+            label="Вид начисления *" outlined dense
+            hint="Нет нужного — впишите название и нажмите Enter"
+            @filter="filterOneOffTypes"
+            @new-value="createOneOffType"
+          />
+          <q-input v-model="oneOffForm.amount" label="Сумма (₽) *" outlined dense type="number"
+                   step="0.01" min="0" />
+          <q-input v-model="oneOffForm.description" label="За что *" outlined dense
+                   maxlength="500"
+                   hint="Это увидит садовод в кабинете: например, «штраф за сжигание мусора, протокол №5 от 12.10»" />
+          <q-input v-model="oneOffForm.due_date" label="Оплатить до" outlined dense type="date"
+                   hint="Необязательно. После этой даты на остаток начислятся пени" />
+          <q-input v-if="oneOffForm.due_date" v-model="oneOffForm.penalty_percent"
+                   label="Пени, %" outlined dense type="number" />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="Отмена" v-close-popup />
+          <q-btn unelevated color="primary" label="Начислить" :loading="actionLoading"
+                 :disable="!oneOffValid" @click="createOneOff" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -982,6 +1042,104 @@ async function applyPenalties() {
 
 const dueDialog = ref(false)
 const dueScope = ref('all')
+// ── Разовое начисление одному участку ──
+// Свет и пени здесь не предлагаются: свет пересчитывается по счётчикам
+// (вносится у счётчика кнопкой «Показание и долг»), пени — по сроку.
+const ONE_OFF_EXCLUDED = ['electricity', 'penalty']
+const oneOffDialog = ref(false)
+const oneOffForm = ref({})
+const oneOffTypes = ref([])
+const oneOffTypeOptions = ref([])
+const currentPeriodLabel = computed(
+  () => periods.value.find((p) => p.id === selectedPeriod.value)?.label || '')
+const oneOffValid = computed(() => {
+  const f = oneOffForm.value
+  return f.plot && f.charge_type && Number(f.amount) > 0 && (f.description || '').trim()
+})
+
+async function openOneOff() {
+  oneOffForm.value = { plot: null, charge_type: null, amount: '', description: '',
+    due_date: '', penalty_percent: '20' }
+  oneOffDialog.value = true
+  try {
+    const { data } = await api.get('/billing/charge-types/?page_size=200')
+    const categoryName = { membership: 'членский', target: 'целевой', water: 'вода',
+      garbage: 'мусор', security: 'охрана', other: 'прочее' }
+    oneOffTypes.value = (data.results || data)
+      .filter((t) => t.is_active && !ONE_OFF_EXCLUDED.includes(t.category))
+      .map((t) => ({ label: `${t.name} (${categoryName[t.category] || t.category})`,
+        name: t.name, value: t.id }))
+    oneOffTypeOptions.value = oneOffTypes.value
+  } catch (e) {
+    $q.notify({ type: 'negative', message: errText(e, 'Не удалось загрузить виды начислений') })
+  }
+}
+
+function filterOneOffTypes(val, update) {
+  update(() => {
+    const q = (val || '').toLowerCase()
+    oneOffTypeOptions.value = q
+      ? oneOffTypes.value.filter((t) => t.label.toLowerCase().includes(q))
+      : oneOffTypes.value
+  })
+}
+
+// Новый вид заводится как «Прочее»: штрафы и разовые работы не членские
+// и не целевые взносы, и в выписке их деньги не должны путаться с ними.
+async function createOneOffType(name, done) {
+  const title = (name || '').trim()
+  if (!title) { done(null); return }
+  const existing = oneOffTypes.value.find((t) => t.name.toLowerCase() === title.toLowerCase())
+  if (existing) { done(existing.value); return }
+  try {
+    const { data } = await api.post('/billing/charge-types/', {
+      name: title, category: 'other', is_active: true,
+    })
+    const opt = { label: `${data.name} (прочее)`, name: data.name, value: data.id }
+    oneOffTypes.value = [...oneOffTypes.value, opt]
+    oneOffTypeOptions.value = oneOffTypes.value
+    done(opt.value)
+  } catch (e) {
+    done(null)
+    $q.notify({ type: 'negative', message: errText(e, 'Не удалось создать вид начисления') })
+  }
+}
+
+async function createOneOff() {
+  actionLoading.value = true
+  try {
+    const f = oneOffForm.value
+    await api.post('/billing/charges/one-off/', {
+      period: selectedPeriod.value, plot: f.plot, charge_type: f.charge_type,
+      amount: f.amount, description: f.description.trim(),
+      ...(f.due_date ? { due_date: f.due_date, penalty_percent: f.penalty_percent || 0 } : {}),
+    })
+    oneOffDialog.value = false
+    $q.notify({ type: 'positive', message: `Начислено ${rub(f.amount)}` })
+    await onPeriodChange(selectedPeriod.value)
+  } catch (e) {
+    $q.notify({ type: 'negative', message: errText(e, 'Не удалось начислить') })
+  } finally { actionLoading.value = false }
+}
+
+function deleteCharge(c) {
+  $q.dialog({
+    title: 'Удалить начисление?',
+    message: `${c.charge_type_name}, уч. №${c.plot_number}, ${rub(c.amount)}. `
+      + 'Удаляйте только ошибочные начисления — оплаченные сайт не удалит.',
+    cancel: { flat: true, label: 'Отмена' },
+    ok: { unelevated: true, color: 'negative', label: 'Удалить' },
+  }).onOk(async () => {
+    try {
+      await api.delete(`/billing/charges/${c.id}/`)
+      $q.notify({ type: 'positive', message: 'Начисление удалено' })
+      await onPeriodChange(selectedPeriod.value)
+    } catch (e) {
+      $q.notify({ type: 'negative', message: errText(e, 'Не удалось удалить начисление') })
+    }
+  })
+}
+
 const dueForm = ref({ charge_type: null, plot_ids: [], due_date: '', penalty_percent: '' })
 
 // Виды начислений, которые реально есть в выбранном периоде, без пеней:

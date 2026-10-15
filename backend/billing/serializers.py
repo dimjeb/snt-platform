@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from rest_framework import serializers
+from members.models import Plot
 from .services import BASIS_FLAT, BASIS_PER_SOTKA, SCOPE_MEMBER, SCOPE_PLOT
 from .models import BankStatement, BankTransaction, ChargeType, BillingPeriod, Charge, Payment
 
@@ -69,11 +70,72 @@ class ChargeSerializer(serializers.ModelSerializer):
     # правлению (ChargeViewSet.permission_classes), рядовой член его не видит.
     member_name = serializers.CharField(source="member.full_name", read_only=True,
                                         default=None)
+    created_by_name = serializers.SerializerMethodField()
+
+    def get_created_by_name(self, obj):
+        user = obj.created_by
+        if user is None:
+            return None
+        return user.get_full_name() or user.get_username()
 
     class Meta:
         model = Charge
         exclude = ("organization",)
-        read_only_fields = ("created_at", "updated_at")
+        # Только чтение: начисления создаются действиями (массовое,
+        # разовое, расчёт света, загрузка долгов), каждое со своими
+        # проверками. Раньше обычный POST/PATCH принимал любые поля —
+        # в том числе участок и период чужого товарищества.
+        read_only_fields = [f.name for f in Charge._meta.fields if f.name != "organization"]
+
+
+class OneOffChargeSerializer(serializers.Serializer):
+    """
+    Разовое начисление одному участку: штраф по решению правления,
+    забытый долг, работы на участке за счёт владельца.
+    """
+    # Электроэнергию пересчитывает расчёт по счётчикам (разовая строка
+    # за месяц была бы перезаписана), пени начисляются сами по сроку.
+    FORBIDDEN = {
+        ChargeType.TYPE_ELECTRICITY:
+            "Долг за свет вносится у счётчика: «Электроэнергия» → «Показание и долг». "
+            "Разовая строка за месяц перезаписалась бы при расчёте.",
+        ChargeType.TYPE_PENALTY:
+            "Пени начисляются сами по сроку оплаты: «Начислить» → «Пени за просрочку».",
+    }
+
+    period = serializers.PrimaryKeyRelatedField(queryset=BillingPeriod.objects.all())
+    plot = serializers.PrimaryKeyRelatedField(queryset=Plot.objects.all())
+    charge_type = serializers.PrimaryKeyRelatedField(queryset=ChargeType.objects.all())
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    description = serializers.CharField(max_length=500)
+    due_date = serializers.DateField(required=False, allow_null=True)
+    penalty_percent = serializers.DecimalField(max_digits=5, decimal_places=2,
+                                               required=False, allow_null=True)
+
+    def validate(self, data):
+        org = self.context["org"]
+        for field, label in (("period", "Период"), ("plot", "Участок"),
+                             ("charge_type", "Вид начисления")):
+            if data[field].organization_id != org.pk:
+                raise serializers.ValidationError({field: f"{label} не найден в этом товариществе."})
+        if data["period"].status == BillingPeriod.STATUS_CLOSED:
+            raise serializers.ValidationError(
+                {"period": "Период закрыт — начислять в него нельзя."})
+        reason = self.FORBIDDEN.get(data["charge_type"].category)
+        if reason:
+            raise serializers.ValidationError({"charge_type": reason})
+        if data["amount"] <= 0:
+            raise serializers.ValidationError({"amount": "Сумма должна быть больше нуля."})
+        if not data["description"].strip():
+            raise serializers.ValidationError(
+                {"description": "Напишите, за что: это увидит садовод в кабинете."})
+        pct = data.get("penalty_percent")
+        if pct is not None and not (0 <= pct <= 100):
+            raise serializers.ValidationError({"penalty_percent": "Пени — от 0 до 100 %."})
+        if pct is not None and not data.get("due_date"):
+            raise serializers.ValidationError(
+                {"penalty_percent": "Пени без срока оплаты не начислить — укажите «Оплатить до»."})
+        return data
 
 
 class BulkChargeBasisMixin(serializers.Serializer):
