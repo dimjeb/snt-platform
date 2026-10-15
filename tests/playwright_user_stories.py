@@ -137,13 +137,13 @@ def stat_value(page: Page, caption: str, timeout: int = 15000) -> str:
     Число из карточки дашборда по подписи под ним.
 
     Карточка рендерится сразу с нулём из начального состояния хранилища
-    (stats = ref({members: 0, ...})), а данные приезжают отдельным запросом
+    (раньше — нули из stats), а данные приезжают отдельным запросом
     в onMounted. networkidle на SPA ненадёжен: сразу после router.push
     сеть уже тиха, и значение успевало прочитаться до ответа API.
     Поэтому ждём появления ненулевого значения, а если его так и нет —
     возвращаем что есть, и проверка честно падает.
     """
-    loc = page.locator(f'.q-card:has(.text-caption:text-is("{caption}")) .text-h5').first
+    loc = page.locator(f'.dash-stat:has(.dash-stat__label:text-is("{caption}")) .dash-stat__value').first
     deadline = time.time() + timeout / 1000
     value = ""
     while time.time() < deadline:
@@ -369,7 +369,10 @@ def story_treasurer(page: Page):
 
     # 2.3 Массовое начисление — кнопки на вкладке долгов
     try:
-        has_bulk = page.locator('.q-btn:has-text("Членский взнос")').count() > 0
+        page.locator(".q-btn-dropdown", has_text="Начислить").click()
+        page.wait_for_timeout(400)
+        has_bulk = page.locator('.q-menu .q-item:has-text("Членский взнос")').count() > 0
+        page.keyboard.press("Escape")
         log("Казначей: кнопки массового начисления", has_bulk)
     except Exception as e:
         log("Казначей: кнопки массового начисления", False, str(e)[:200])

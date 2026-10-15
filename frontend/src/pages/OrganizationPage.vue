@@ -29,7 +29,7 @@
             <template #prepend><q-icon name="image" /></template>
           </q-file>
           <div class="row q-gutter-sm q-mt-sm">
-            <q-btn color="primary" icon="upload" label="Загрузить" :disable="!file"
+            <q-btn unelevated color="primary" icon="upload" label="Загрузить" :disable="!file"
                    :loading="saving" @click="upload" />
             <q-btn v-if="logo" flat color="negative" icon="delete" label="Убрать логотип"
                    :loading="removing" @click="remove" />

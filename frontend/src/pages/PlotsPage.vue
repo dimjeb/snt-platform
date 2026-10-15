@@ -3,7 +3,7 @@
     <div class="row items-center q-mb-md">
       <div class="text-h6">Участки</div>
       <q-space />
-      <q-btn icon="add" color="green-8" round flat @click="openCreate" />
+      <q-btn icon="add" color="primary" round flat @click="openCreate" />
     </div>
 
     <q-input v-model="search" outlined dense placeholder="Поиск по номеру, кадастру..." class="q-mb-md" clearable>
@@ -119,7 +119,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="blue-8" label="Сохранить" :loading="saving" @click="save" />
+          <q-btn unelevated color="primary" label="Сохранить" :loading="saving" @click="save" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -162,7 +162,7 @@
         <q-card-actions align="right">
           <q-btn flat label="Закрыть" v-close-popup />
           <q-btn flat color="negative" icon="delete" @click="confirmDelete(selected)" />
-          <q-btn flat color="blue-8" icon="edit" label="Изменить" @click="openEdit(selected)" />
+          <q-btn flat color="primary" icon="edit" label="Изменить" @click="openEdit(selected)" />
         </q-card-actions>
       </q-card>
     </q-dialog>

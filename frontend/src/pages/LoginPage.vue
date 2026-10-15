@@ -66,7 +66,7 @@
 
             <q-btn
               type="submit"
-              color="green-8"
+              color="primary"
               label="Войти"
               class="full-width q-py-sm"
               :loading="loading"
@@ -80,7 +80,7 @@
                логин и временный пароль, чаще всего непонятно не как
                нажать «Войти», а что делать дальше. -->
           <q-btn
-            flat dense no-caps color="green-8" icon="help_outline"
+            flat dense no-caps color="primary" icon="help_outline"
             label="Инструкция: как пользоваться сайтом"
             to="/help"
           />

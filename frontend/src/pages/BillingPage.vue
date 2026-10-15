@@ -23,21 +23,38 @@
     <q-tab-panels v-model="tab" animated>
       <q-tab-panel name="debt" class="q-pa-none">
         <div class="row q-mb-sm q-gutter-sm" v-if="auth.isChairman || auth.isTreasurer">
-          <q-btn size="sm" outline color="green-8" icon="add" label="Членский взнос" @click="bulkMembershipDialog = true" />
-          <q-btn size="sm" outline color="blue-8" icon="add" label="Целевой взнос" @click="bulkTargetDialog = true" />
-          <q-btn
-            size="sm" outline color="grey-8" icon="event"
-            label="Срок оплаты" @click="openDueDate"
-          />
-          <q-btn
-            size="sm" outline color="grey-8" icon="upload_file"
-            label="Загрузить долги из Excel" @click="debtImportDialog = true"
-          />
-          <q-btn
-            size="sm" outline color="deep-orange-8" icon="gavel"
-            label="Начислить пени" :loading="actionLoading"
-            @click="confirmPenalties"
-          />
+          <!-- Одна главная кнопка вместо пяти разноцветных: всё, что
+               создаёт начисления, — в «Начислить», редкое — в «⋯». -->
+          <q-btn-dropdown
+            unelevated color="primary" icon="add" label="Начислить"
+            :loading="actionLoading"
+          >
+            <q-list>
+              <q-item clickable v-close-popup @click="bulkMembershipDialog = true">
+                <q-item-section>Членский взнос</q-item-section>
+              </q-item>
+              <q-item clickable v-close-popup @click="bulkTargetDialog = true">
+                <q-item-section>Целевой взнос</q-item-section>
+              </q-item>
+              <q-item clickable v-close-popup @click="confirmPenalties">
+                <q-item-section>Пени за просрочку</q-item-section>
+              </q-item>
+            </q-list>
+          </q-btn-dropdown>
+          <q-btn flat color="grey-8" icon="more_horiz" label="Ещё">
+            <q-menu>
+              <q-list>
+                <q-item clickable v-close-popup @click="openDueDate">
+                  <q-item-section avatar><q-icon name="event" /></q-item-section>
+                  <q-item-section>Срок оплаты</q-item-section>
+                </q-item>
+                <q-item clickable v-close-popup @click="debtImportDialog = true">
+                  <q-item-section avatar><q-icon name="upload_file" /></q-item-section>
+                  <q-item-section>Загрузить долги из Excel</q-item-section>
+                </q-item>
+              </q-list>
+            </q-menu>
+          </q-btn>
         </div>
 
         <q-list separator bordered rounded>
@@ -122,7 +139,7 @@
               </div>
               <q-btn
                 v-if="Number(c.paid_amount) > 0"
-                flat dense size="sm" color="blue-8" icon="swap_horiz"
+                flat dense size="sm" color="primary" icon="swap_horiz"
                 label="Перенести оплату"
                 @click="openTransfer(c)"
               />
@@ -142,7 +159,7 @@
         </q-banner>
         <q-btn
           v-if="auth.isTreasurer || auth.isChairman"
-          color="green-8" icon="add" label="Принять платёж"
+          color="primary" icon="add" label="Принять платёж"
           class="q-mb-md full-width" outline
           @click="paymentDialog = true"
         />
@@ -201,7 +218,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="green-8" label="Начислить всем" :loading="actionLoading" @click="createMembership" />
+          <q-btn unelevated color="primary" label="Начислить всем" :loading="actionLoading" @click="createMembership" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -227,7 +244,7 @@
           <q-option-group
             v-model="targetForm.scope"
             :options="scopeOptions"
-            color="blue-8" dense inline
+            color="primary" dense inline
           />
           <div v-if="targetForm.scope === 'member'" class="text-caption text-grey-8 charge-preview">
             Один взнос на человека, сколько бы участков у него ни было.
@@ -239,7 +256,7 @@
             v-if="targetForm.scope === 'plot'"
             v-model="targetForm.basis"
             :options="basisOptions"
-            color="blue-8" dense
+            color="primary" dense
           />
           <q-input
             v-if="targetForm.basis === 'flat' || targetForm.scope === 'member'"
@@ -296,7 +313,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="blue-8" label="Начислить" :loading="actionLoading" @click="createTarget" />
+          <q-btn unelevated color="primary" label="Начислить" :loading="actionLoading" @click="createTarget" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -340,7 +357,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="grey-9" label="Изменить срок" :loading="actionLoading"
+          <q-btn unelevated color="primary" label="Изменить срок" :loading="actionLoading"
                  :disable="!dueForm.charge_type || (dueScope === 'some' && !dueForm.plot_ids.length)"
                  @click="saveDueDate" />
         </q-card-actions>
@@ -380,7 +397,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="blue-8" label="Перенести" :loading="actionLoading"
+          <q-btn unelevated color="primary" label="Перенести" :loading="actionLoading"
                  :disable="!transferForm.target || !Number(transferForm.amount)"
                  @click="doTransfer" />
         </q-card-actions>
@@ -428,7 +445,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="green-8" label="Принять" :loading="actionLoading"
+          <q-btn unelevated color="primary" label="Принять" :loading="actionLoading"
                  :disable="!payForm.plot || !Number(payForm.amount)"
                  @click="createPayment" />
         </q-card-actions>

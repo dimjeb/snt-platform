@@ -59,7 +59,7 @@
 
       <q-btn
         type="submit"
-        color="orange-8"
+        color="primary"
         label="Передать показания"
         class="full-width"
         :loading="loading"

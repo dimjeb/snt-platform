@@ -54,7 +54,7 @@
         <q-btn flat label="Закрыть" @click="close" />
         <q-btn outline color="primary" icon="fact_check" label="Проверить"
                :disable="!file" :loading="busy === 'check'" @click="run(true)" />
-        <q-btn unelevated color="green-8" icon="upload" label="Загрузить"
+        <q-btn unelevated color="primary" icon="upload" label="Загрузить"
                :disable="!file || !checked" :loading="busy === 'load'" @click="run(false)">
           <q-tooltip v-if="file && !checked">Сначала «Проверить»</q-tooltip>
         </q-btn>

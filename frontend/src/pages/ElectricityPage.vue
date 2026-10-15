@@ -11,8 +11,8 @@
     <q-tab-panels v-model="tab" animated>
       <!-- Счётчики -->
       <q-tab-panel name="meters" class="q-pa-none">
-        <q-btn outline color="orange-8" icon="add" label="Добавить счётчик" class="q-mb-md" @click="openNewMeter" />
-        <q-btn outline color="orange-8" icon="upload_file" label="Загрузить из Excel" class="q-mb-md q-ml-sm"
+        <q-btn outline color="primary" icon="add" label="Добавить счётчик" class="q-mb-md" @click="openNewMeter" />
+        <q-btn outline color="primary" icon="upload_file" label="Загрузить из Excel" class="q-mb-md q-ml-sm"
                @click="importDialog = true" />
         <q-list separator bordered rounded>
           <q-item v-for="m in meters" :key="m.id">
@@ -24,7 +24,7 @@
               <q-item-label caption>Участок: {{ m.plot_number || '—' }}</q-item-label>
             </q-item-section>
             <q-item-section side>
-              <q-btn flat dense no-caps color="orange-8" icon="edit_note" label="Показание и долг" @click="openOpening(m)" />
+              <q-btn flat dense no-caps color="primary" icon="edit_note" label="Показание и долг" @click="openOpening(m)" />
             </q-item-section>
           </q-item>
           <q-item v-if="!meters.length"><q-item-section class="text-center text-grey-6">Нет счётчиков</q-item-section></q-item>
@@ -35,8 +35,8 @@
       <q-tab-panel name="readings" class="q-pa-none">
         <div class="row q-gutter-sm q-mb-md">
           <q-input v-model="readingMonth" type="month" outlined dense label="Период" class="col" />
-          <q-btn
-            color="orange-8" icon="calculate" label="Рассчитать"
+          <q-btn unelevated
+            color="primary" icon="calculate" label="Рассчитать"
             :loading="calculating"
             @click="calculate"
           />
@@ -60,7 +60,7 @@
 
       <!-- Тарифы -->
       <q-tab-panel name="tariffs" class="q-pa-none">
-        <q-btn outline color="orange-8" icon="add" label="Добавить тариф" class="q-mb-md" @click="tariffDialog = true" />
+        <q-btn outline color="primary" icon="add" label="Добавить тариф" class="q-mb-md" @click="tariffDialog = true" />
         <q-list separator bordered rounded>
           <q-item v-for="t in tariffs" :key="t.id">
             <q-item-section>
@@ -110,7 +110,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="orange-8" label="Сохранить" :loading="saving" @click="saveMeter" />
+          <q-btn unelevated color="primary" label="Сохранить" :loading="saving" @click="saveMeter" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -128,7 +128,7 @@
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="Отмена" v-close-popup />
-          <q-btn color="orange-8" label="Сохранить" :loading="saving" @click="saveTariff" />
+          <q-btn unelevated color="primary" label="Сохранить" :loading="saving" @click="saveTariff" />
         </q-card-actions>
       </q-card>
     </q-dialog>
