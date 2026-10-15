@@ -664,6 +664,40 @@ with sync_playwright() as pw:
                "Счёт: скопировано" in body_text(mobile), "")
     phone.close()
 
+    # 11. Выписка проведена частично: строка с участком, указанным после
+    #     проведения, проводится той же кнопкой; не-взнос пропускается.
+    page.goto(f"{BASE}/dashboard", wait_until="networkidle")
+    page.wait_for_timeout(1500)
+    page.locator(".dash-todo", has_text="непроведённ").locator(".dash-todo__action").click()
+    page.wait_for_timeout(2000)
+    verify("«Провести выписку» с главной открывает саму выписку",
+           "open=" in page.url and page.locator(".q-card .text-subtitle1").count() > 0,
+           page.url)
+    page.goto(f"{BASE}/statements", wait_until="networkidle")
+    page.wait_for_timeout(1000)
+    verify("в списке выписок — «Проведена частично»",
+           "Проведена частично" in body_text(page), "")
+    page.get_by_text("stuck-check.xlsx").first.click()
+    page.wait_for_timeout(1500)
+    apply_btn = page.get_by_role("button", name="Провести 1 платёж")
+    verify("у частично проведённой выписки есть кнопка «Провести»",
+           apply_btn.count() == 1, "")
+    if apply_btn.count():
+        apply_btn.click()
+        page.wait_for_timeout(2000)
+        verify("оставшаяся строка проведена, выписка — «Проведена»",
+               "Выписка проведена" in body_text(page), "")
+    page.get_by_text("split-check.xlsx").first.click()
+    page.wait_for_timeout(1500)
+    page.get_by_role("button", name="Пропустить").first.click()
+    page.wait_for_timeout(600)
+    page.locator(".q-dialog input").fill("проверка")
+    page.locator(".q-dialog").get_by_role("button", name="Пропустить").click()
+    page.wait_for_timeout(1500)
+    verify("строку можно пропустить — она больше не ждёт проведения",
+           "Пропущена: проверка" in body_text(page)
+           and page.get_by_role("button", name="Вернуть к проведению").count() == 1, "")
+
     browser.close()
 
 print()
