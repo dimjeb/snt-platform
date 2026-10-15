@@ -30,28 +30,26 @@
           <div class="text-caption text-grey-7">опознано</div>
         </div>
         <div class="col-4">
-          <div class="text-h6 text-weight-bold" :class="summary.unmatched ? 'text-negative' : ''">
-            {{ summary.unmatched }}
+          <div class="text-h6 text-weight-bold" :class="summary.pending_unmatched ? 'text-negative' : ''">
+            {{ summary.pending_unmatched }}
           </div>
-          <div class="text-caption text-grey-7">без участка</div>
+          <div class="text-caption text-grey-7">ждут участка</div>
         </div>
       </q-card-section>
 
-      <q-card-section v-if="summary.unmatched" class="bg-orange-1 text-orange-10 text-body2">
+      <q-card-section v-if="summary.pending_unmatched" class="bg-orange-1 text-orange-10 text-body2">
         <q-icon name="warning" class="q-mr-xs" />
-        Строки без участка не будут проведены. Укажите участок вручную или
-        оставьте — их можно провести позже.
+        Строки без участка не проводятся. Укажите участок — и проведите выписку
+        ещё раз (это можно и после первого проведения), а если поступление не
+        взнос (проценты банка, возврат) — нажмите «Пропустить».
       </q-card-section>
 
       <q-list separator>
         <q-item v-for="t in statement.transactions" :key="t.id">
           <q-item-section avatar>
-            <q-icon
-              :name="t.status === 'applied' ? 'check_circle'
-                    : t.plot_number ? 'account_balance' : 'help'"
-              :color="t.status === 'applied' ? 'positive'
-                     : t.plot_number ? 'green-8' : 'negative'"
-            />
+            <q-icon :name="rowIcon(t).name" :color="rowIcon(t).color">
+              <q-tooltip>{{ t.status_display }}</q-tooltip>
+            </q-icon>
           </q-item-section>
           <q-item-section>
             <q-item-label>
@@ -64,7 +62,7 @@
                  сначала идут в начисления этой категории. -->
             <q-item-label caption>
               <q-select
-                v-if="statement.status !== 'applied'"
+                v-if="t.status === 'new'"
                 :model-value="t.category"
                 :options="categoryOptions"
                 emit-value map-options dense borderless
@@ -81,17 +79,25 @@
             <q-item-label v-if="t.allocation && t.allocation.length" caption class="text-blue-9">
               Разделено: {{ allocationText(t) }}
             </q-item-label>
-            <q-item-label v-if="statement.status !== 'applied'" caption>
+            <q-item-label v-if="t.status === 'new'" caption>
               <q-btn flat dense size="sm" color="primary" icon="call_split"
                      :label="t.allocation && t.allocation.length ? 'Изменить разделение' : 'Разделить по категориям'"
                      @click="openSplit(t)" />
+              <q-btn flat dense size="sm" color="grey-8" icon="do_not_disturb_on"
+                     label="Пропустить" class="q-ml-sm" @click="skipRow(t)" />
             </q-item-label>
-            <q-item-label caption v-if="t.note" class="text-orange-9">
+            <q-item-label v-else-if="t.status === 'skipped'" caption>
+              <q-btn flat dense size="sm" color="primary" icon="undo"
+                     label="Вернуть к проведению" @click="unskipRow(t)" />
+            </q-item-label>
+            <q-item-label caption v-if="t.note"
+                          :class="t.status === 'skipped' ? 'text-grey-7' : 'text-orange-9'">
               {{ t.note }}
             </q-item-label>
           </q-item-section>
           <q-item-section side style="min-width: 140px">
-            <div v-if="t.plot_number" class="text-right">
+            <div v-if="t.status === 'skipped'" class="text-right text-grey-7">пропущена</div>
+            <div v-else-if="t.plot_number" class="text-right">
               <div class="text-weight-medium">уч. {{ t.plot_number }}</div>
               <div class="text-caption text-grey-6">{{ matchLabel(t) }}</div>
             </div>
@@ -115,14 +121,17 @@
       </q-list>
 
       <q-card-actions align="right" class="q-pa-md">
+        <!-- Кнопка есть, пока есть что проводить, — и у частично
+             проведённой выписки тоже: строки, которым участок указали
+             после первого проведения, проводятся ею же. -->
         <q-btn
           v-if="statement.status !== 'applied'"
           color="primary"
           icon="done_all"
-          :label="`Провести ${summary.matched} платежей`"
+          :label="`Провести ${summary.pending} ${plural(summary.pending, 'платёж', 'платежа', 'платежей')}`"
           unelevated
           :loading="applying"
-          :disable="!summary.matched"
+          :disable="!summary.pending"
           @click="applyStatement"
         />
         <div v-else class="text-positive">
@@ -134,7 +143,7 @@
     <!-- История -->
     <div class="text-subtitle2 q-mb-sm" v-if="history.length">Загруженные ранее</div>
     <q-list separator bordered rounded v-if="history.length">
-      <q-item v-for="s in history" :key="s.id" clickable @click="openStatement(s.id)">
+      <q-item v-for="s in history" :key="s.id" clickable @click="openFromHistory(s.id)">
         <q-item-section>
           <q-item-label>{{ s.file_name }}</q-item-label>
           <q-item-label caption>
@@ -142,7 +151,7 @@
           </q-item-label>
         </q-item-section>
         <q-item-section side>
-          <q-badge :color="s.status === 'applied' ? 'positive' : 'orange-8'">
+          <q-badge :color="{ applied: 'positive', partial: 'orange-8' }[s.status] || 'grey-7'">
             {{ s.status_display }}
           </q-badge>
         </q-item-section>
@@ -242,13 +251,28 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useQuasar } from 'quasar'
+import { useRoute } from 'vue-router'
 import api from 'src/api/client'
 import { formatMoney } from 'src/utils/money'
 
 const $q = useQuasar()
+const route = useRoute()
+
+function plural(n, one, few, many) {
+  const a = Math.abs(n) % 100
+  if (a >= 11 && a <= 19) return many
+  const b = a % 10
+  return b === 1 ? one : (b >= 2 && b <= 4 ? few : many)
+}
+
+function rowIcon(t) {
+  if (t.status === 'applied') return { name: 'check_circle', color: 'positive' }
+  if (t.status === 'skipped') return { name: 'do_not_disturb_on', color: 'grey-6' }
+  return t.plot_number ? { name: 'account_balance', color: 'primary' } : { name: 'help', color: 'negative' }
+}
 
 const statement = ref(null)
-const summary = ref({ total_rows: 0, matched: 0, unmatched: 0 })
+const summary = ref({ total_rows: 0, matched: 0, unmatched: 0, pending: 0, pending_unmatched: 0 })
 const history = ref([])
 const uploadDialog = ref(false)
 const file = ref(null)
@@ -424,7 +448,7 @@ async function applyStatement() {
     $q.notify({
       type: 'positive',
       message: `Проведено ${data.applied} платежей на ${formatMoney(data.total)} ₽` +
-        (data.skipped ? `, пропущено без участка: ${data.skipped}` : ''),
+        (data.skipped ? `. Ждут участка: ${data.skipped}` : ''),
     })
     await loadHistory()
   } catch (e) {
@@ -437,5 +461,49 @@ async function applyStatement() {
   }
 }
 
-onMounted(loadHistory)
+// Выписка открывается над списком — на длинной странице её не видно.
+async function openFromHistory(id) {
+  await openStatement(id)
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+async function skipRow(t) {
+  $q.dialog({
+    title: 'Пропустить строку',
+    message: 'Деньги никуда не разнесутся, строка перестанет ждать проведения. '
+      + 'Почему пропускаем? (необязательно)',
+    prompt: { model: '', type: 'text', placeholder: 'например: проценты банка' },
+    cancel: { flat: true, label: 'Отмена' },
+    ok: { unelevated: true, color: 'primary', label: 'Пропустить' },
+  }).onOk(async (reason) => {
+    try {
+      await api.post(`/billing/transactions/${t.id}/skip/`, { reason })
+      await openStatement(statement.value.id)
+      await loadHistory()
+    } catch (e) {
+      $q.notify({ type: 'negative', message: e.response?.data?.detail || 'Не удалось пропустить строку' })
+    }
+  })
+}
+
+async function unskipRow(t) {
+  try {
+    await api.post(`/billing/transactions/${t.id}/unskip/`)
+    await openStatement(statement.value.id)
+    await loadHistory()
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e.response?.data?.detail || 'Не удалось вернуть строку' })
+  }
+}
+
+onMounted(async () => {
+  await loadHistory()
+  // Ссылка с главной («Провести выписку») открывает сразу нужную выписку.
+  const id = Number(route.query.open)
+  if (id) {
+    try {
+      await openStatement(id)
+    } catch { /* выписку удалили — остаёмся на списке */ }
+  }
+})
 </script>

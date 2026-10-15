@@ -442,6 +442,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("ГЛАВНАЯ ПРАВЛЕНИЯ"))
         self._check_dashboard(c, CH, ME)
 
+        # ---------------- Выписка: частичное проведение и пропуск строк ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("ВЫПИСКА: ДОПРОВЕДЕНИЕ И ПРОПУСК"))
+        self._check_statement_partial(c, CH)
+
         # ---------------- Электроэнергия ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("ЭЛЕКТРОЭНЕРГИЯ"))
         self._check_electricity_gaps()
@@ -1880,7 +1884,7 @@ class Command(BaseCommand):
         by_key = {t.get("key"): t for t in todo}
         st_item = by_key.get("statement") or {}
         self.verify("главная: непроведённая выписка попадает в «что сделать»",
-                    st_item.get("to") == "/statements"
+                    st_item.get("to", "").startswith("/statements?open=")
                     and "не определился" in st_item.get("detail", ""),
                     f"{st_item}")
         levels = [t.get("level") for t in todo]
@@ -1888,6 +1892,110 @@ class Command(BaseCommand):
                     levels == sorted(levels, key=lambda lv: lv != "attention")
                     and all(t.get("to", "").startswith("/") and t.get("action") for t in todo),
                     f"{levels}")
+
+    def _check_statement_partial(self, c, chairman_headers):
+        """
+        Строки без участка при проведении пропускаются, а выписка раньше
+        всё равно становилась «Проведена», и кнопка пропадала: участок,
+        указанный потом, провести было нечем, строка висела вечно.
+        Теперь выписка «Проведена частично», её проводят ещё раз, а
+        поступление, которое не взнос, пропускают.
+        """
+        import io
+        import json as _json
+
+        from billing.models import BankStatement, BankTransaction, Payment
+        from members.models import Plot
+
+        org = self._fixture_org
+        plot = Plot.objects.filter(organization=org).order_by("number").first()
+
+        def doc(number, amount, purpose, payer):
+            return (
+                "СекцияДокумент=Платежное поручение\n"
+                f"Номер={number}\nДата=20.09.2026\nСумма={amount}\n"
+                f"ПлательщикСчет={payer}\nПлательщик=ПЛАТЕЛЬЩИК {number}\n"
+                f"ПолучательСчет={org.bank_account}\n"
+                f"НазначениеПлатежа={purpose}\nКонецДокумента\n")
+
+        content = (
+            "1CClientBankExchange\nВерсияФормата=1.03\nКодировка=Windows\n"
+            "ДатаНачала=20.09.2026\nДатаКонца=20.09.2026\n"
+            f"РасчСчет={org.bank_account}\n"
+            + doc(951, "100.00", f"Участок {plot.number}", "40817810500000095101")
+            + doc(952, "200.00", "перевод", "40817810500000095202")
+            + doc(953, "3.15", "проценты на остаток", "30101810400000000225")
+            + "КонецФайла\n").encode("windows-1251")
+        upload = io.BytesIO(content)
+        upload.name = "partial.txt"
+        r = c.post("/api/billing/statements/", data={"file": upload}, **chairman_headers)
+        if r.status_code != 201:
+            self.verify("выписка для допроведения загружена", False, f"HTTP {r.status_code}")
+            return
+        sid = self._json(r)["id"]
+        rows = {t.doc_number: t for t in BankTransaction.objects.filter(statement_id=sid)}
+
+        r = c.post(f"/api/billing/statements/{sid}/apply/", **chairman_headers)
+        st = BankStatement.objects.get(pk=sid)
+        self.verify("со строками без участка выписка «проведена частично», а не «проведена»",
+                    r.status_code == 200 and st.status == BankStatement.STATUS_PARTIAL,
+                    f"HTTP {r.status_code}, статус {st.status}")
+        summary = (self._json(r) or {}).get("summary") or {}
+        self.verify("сводка выписки: 0 к проведению, 2 ждут участка",
+                    summary.get("pending") == 0 and summary.get("pending_unmatched") == 2,
+                    f"{summary}")
+
+        dash = self._json(c.get("/api/dashboard/", **chairman_headers)) or {}
+        item = {t["key"]: t for t in dash.get("todo", [])}.get("statement") or {}
+        self.verify("главная ведёт в ту выписку, где ждут строки",
+                    item.get("to") == f"/statements?open={sid}" or
+                    item.get("to", "").startswith("/statements?open="), f"{item.get('to')}")
+
+        r = c.post(f"/api/billing/transactions/{rows['951'].pk}/skip/", **chairman_headers)
+        self.verify("проведённую строку пропустить нельзя", r.status_code == 400,
+                    f"HTTP {r.status_code}")
+
+        r = c.post(f"/api/billing/transactions/{rows['953'].pk}/skip/",
+                   data=_json.dumps({"reason": "проценты банка"}),
+                   content_type="application/json", **chairman_headers)
+        rows["953"].refresh_from_db()
+        self.verify("строку «не взнос» можно пропустить",
+                    r.status_code == 200 and rows["953"].status == BankTransaction.STATUS_SKIPPED
+                    and "проценты банка" in rows["953"].note,
+                    f"HTTP {r.status_code}, {rows['953'].status}")
+
+        # Участок указали после проведения — ровно случай из жизни.
+        paid_951 = Payment.objects.filter(bank_transaction=rows["951"]).count()
+        r = c.patch(f"/api/billing/transactions/{rows['952'].pk}/",
+                    data=_json.dumps({"plot": plot.pk}),
+                    content_type="application/json", **chairman_headers)
+        r = c.post(f"/api/billing/statements/{sid}/apply/", **chairman_headers)
+        res = self._json(r) or {}
+        st.refresh_from_db()
+        rows["952"].refresh_from_db()
+        self.verify("частично проведённую выписку проводят ещё раз — строка с участком проходит",
+                    r.status_code == 200 and res.get("applied") == 1
+                    and rows["952"].status == BankTransaction.STATUS_APPLIED,
+                    f"HTTP {r.status_code}, {res.get('applied')}, {rows['952'].status}")
+        self.verify("повторное проведение не задваивает уже проведённые строки",
+                    Payment.objects.filter(bank_transaction=rows["951"]).count() == paid_951,
+                    f"было {paid_951}")
+        self.verify("когда ждать нечего — выписка «проведена»",
+                    st.status == BankStatement.STATUS_APPLIED, st.status)
+        r = c.post(f"/api/billing/statements/{sid}/apply/", **chairman_headers)
+        self.verify("полностью проведённую выписку повторно не провести",
+                    r.status_code == 400, f"HTTP {r.status_code}")
+
+        r = c.post(f"/api/billing/transactions/{rows['953'].pk}/unskip/", **chairman_headers)
+        st.refresh_from_db()
+        self.verify("пропуск отменяется — выписка снова «частично»",
+                    r.status_code == 200 and st.status == BankStatement.STATUS_PARTIAL,
+                    f"HTTP {r.status_code}, {st.status}")
+        c.post(f"/api/billing/transactions/{rows['953'].pk}/skip/", **chairman_headers)
+        r = c.delete(f"/api/billing/statements/{sid}/", **chairman_headers)
+        self.verify("выписку с проведёнными строками не удалить",
+                    r.status_code == 400 and BankStatement.objects.filter(pk=sid).exists(),
+                    f"HTTP {r.status_code}")
 
     def _check_security_holes(self, c, chairman_headers):
         """
@@ -3293,9 +3401,16 @@ class Command(BaseCommand):
                     stats.get("loaded") == 0 and stats.get("duplicates") == 2,
                     f"загружено {stats.get('loaded')}, дублей {stats.get('duplicates')}")
 
+        # Строка без участка осталась ждать — выписка «частично», её можно
+        # провести ещё раз, но уже проведённое второй раз не ляжет.
+        payments_before = Payment.objects.filter(organization=org, external_ref="901").count()
         r = c.post(f"/api/billing/statements/{sid}/apply/", **chairman_headers)
-        self.verify("повторное проведение отклоняется", r.status_code == 400,
-                    f"HTTP {r.status_code}")
+        again = self._json(r) or {}
+        self.verify("повторное проведение не задваивает платежи",
+                    r.status_code == 200 and again.get("applied") == 0
+                    and Payment.objects.filter(organization=org,
+                                               external_ref="901").count() == payments_before,
+                    f"HTTP {r.status_code}, проведено {again.get('applied')}")
 
         r = c.get("/api/billing/statements/", **member_headers)
         self.verify("рядовой член к выпискам не допущен",

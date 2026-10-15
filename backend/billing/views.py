@@ -31,7 +31,9 @@ from .statement_service import (
     StatementImportError,
     apply_statement,
     import_statement,
+    skip_transaction,
     statement_summary,
+    unskip_transaction,
 )
 
 
@@ -459,6 +461,8 @@ class BankStatementViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     def apply(self, request, pk=None):
         """Провести выписку: создать платежи по опознанным строкам."""
         statement = self.get_object()
+        # Частично проведённую — можно: берутся только строки, которые
+        # ещё ждут, проведённые заблокированы, второй раз деньги не лягут.
         if statement.status == BankStatement.STATUS_APPLIED:
             return Response({"detail": "Эта выписка уже проведена."},
                             status=status.HTTP_400_BAD_REQUEST)
@@ -466,6 +470,7 @@ class BankStatementViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
         return Response({
             **result,
             "statement": BankStatementSerializer(statement).data,
+            "summary": statement_summary(statement),
         })
 
     @action(detail=True, methods=["get"])
@@ -485,7 +490,13 @@ class BankTransactionViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
     serializer_class = BankTransactionSerializer
     permission_classes = [IsTreasurer]
     filterset_fields = ["statement", "status", "match_kind"]
-    http_method_names = ["get", "patch", "head", "options"]
+    # post — только для действий skip/unskip: создавать строки руками
+    # нельзя, они приходят из файла банка.
+    http_method_names = ["get", "patch", "post", "head", "options"]
+
+    def create(self, request, *args, **kwargs):
+        return Response({"detail": "Строки выписки приходят только из файла банка."},
+                        status=status.HTTP_405_METHOD_NOT_ALLOWED)
 
     def perform_update(self, serializer):
         # Ручная привязка помечается отдельно: по журналу должно быть
@@ -494,6 +505,26 @@ class BankTransactionViewSet(OrgQuerysetMixin, viewsets.ModelViewSet):
         if "plot" in serializer.validated_data:
             instance.match_kind = BankTransaction.MATCH_MANUAL
             instance.save(update_fields=["match_kind", "updated_at"])
+
+    @action(detail=True, methods=["post"])
+    def skip(self, request, pk=None):
+        """Пропустить строку — это не взнос. Тело: {"reason": "..."}."""
+        row = self.get_object()
+        if row.status != BankTransaction.STATUS_NEW:
+            return Response({"detail": "Пропустить можно только строку, которая ждёт проведения."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        skip_transaction(row, reason=str(request.data.get("reason", "")).strip())
+        return Response(BankTransactionSerializer(row).data)
+
+    @action(detail=True, methods=["post"])
+    def unskip(self, request, pk=None):
+        """Вернуть пропущенную строку к проведению."""
+        row = self.get_object()
+        if row.status != BankTransaction.STATUS_SKIPPED:
+            return Response({"detail": "Строка не пропущена."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        unskip_transaction(row)
+        return Response(BankTransactionSerializer(row).data)
 
 
 class DashboardView(APIView):

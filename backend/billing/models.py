@@ -222,10 +222,15 @@ class BankStatement(OrgModel):
     """
 
     STATUS_PARSED = "parsed"
+    # Проводили, но остались строки «ожидает проведения»: без участка на
+    # момент проведения или с участком, указанным позже. Такую выписку
+    # проводят ещё раз — берутся только оставшиеся строки.
+    STATUS_PARTIAL = "partial"
     STATUS_APPLIED = "applied"
 
     STATUS_CHOICES = [
         (STATUS_PARSED, "Разобрана"),
+        (STATUS_PARTIAL, "Проведена частично"),
         (STATUS_APPLIED, "Проведена"),
     ]
 

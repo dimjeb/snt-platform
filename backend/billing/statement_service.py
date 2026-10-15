@@ -160,16 +160,62 @@ def apply_statement(statement, *, user=None):
             # Разнесено по начислениям — без того, что легло авансом.
             total += done.paid_total
 
-        statement.status = BankStatement.STATUS_APPLIED
         statement.applied_at = timezone.now()
-        statement.save(update_fields=["status", "applied_at", "updated_at"])
+        refresh_statement_status(statement)
 
     return {"applied": applied, "skipped": skipped, "total": total}
 
 
+def refresh_statement_status(statement):
+    """
+    Статус выписки по её строкам.
+
+    «Проведена» — только когда ждать больше нечего: каждая строка либо
+    проведена, либо пропущена. Раньше выписка становилась «проведённой»
+    сразу после первого проведения, строки без участка оставались
+    висеть, а кнопка «Провести» пропадала — довести их было нечем.
+    Пока выписку не проводили ни разу, она «Разобрана».
+    """
+    if statement.applied_at is None:
+        new_status = BankStatement.STATUS_PARSED
+    elif statement.transactions.filter(status=BankTransaction.STATUS_NEW).exists():
+        new_status = BankStatement.STATUS_PARTIAL
+    else:
+        new_status = BankStatement.STATUS_APPLIED
+    statement.status = new_status
+    statement.save(update_fields=["status", "applied_at", "updated_at"])
+    return new_status
+
+
+def skip_transaction(row, *, reason=""):
+    """
+    Пропустить строку: это не взнос (проценты банка, возврат, ошибочный
+    платёж). Деньги никуда не разносятся; строка перестаёт ждать
+    проведения и не висит в «что сделать сейчас».
+    """
+    row.status = BankTransaction.STATUS_SKIPPED
+    row.note = (f"Пропущена: {reason}" if reason else "Пропущена — не взнос")[:255]
+    row.save(update_fields=["status", "note", "updated_at"])
+    refresh_statement_status(row.statement)
+
+
+def unskip_transaction(row):
+    """Вернуть пропущенную строку к проведению."""
+    row.status = BankTransaction.STATUS_NEW
+    row.note = ""
+    row.save(update_fields=["status", "note", "updated_at"])
+    refresh_statement_status(row.statement)
+
+
 def statement_summary(statement):
     rows = statement.transactions.all()
+    fresh = rows.filter(status=BankTransaction.STATUS_NEW)
     return {
+        # Сколько провести прямо сейчас и сколько ждёт участка.
+        "pending": fresh.exclude(plot=None).count(),
+        "pending_unmatched": fresh.filter(plot=None).count(),
+        "applied": rows.filter(status=BankTransaction.STATUS_APPLIED).count(),
+        "skipped": rows.filter(status=BankTransaction.STATUS_SKIPPED).count(),
         "total_rows": rows.count(),
         "matched": rows.exclude(match_kind=MATCH_NONE).exclude(plot=None).count(),
         "by_plot": rows.filter(match_kind=MATCH_PLOT).count(),

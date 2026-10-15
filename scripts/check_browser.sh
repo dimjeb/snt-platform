@@ -165,6 +165,23 @@ BankTransaction.objects.create(
     plot=p, member=m, match_kind=BankTransaction.MATCH_PLOT,
     category="membership",
 )
+
+# Выписку уже проводили, но строке участок указали позже — она ждёт.
+# Раньше такая выписка значилась «Проведена», и провести строку было
+# нечем: кнопка пропадала.
+from django.utils import timezone as _tz
+
+stuck = BankStatement.objects.create(organization=org, file_name="stuck-check.xlsx",
+                                     status=BankStatement.STATUS_PARTIAL,
+                                     applied_at=_tz.now())
+BankTransaction.objects.create(
+    organization=org, statement=stuck, doc_number="S1", date=date(2026, 9, 26),
+    amount="10.00", status=BankTransaction.STATUS_APPLIED, plot=p,
+)
+BankTransaction.objects.create(
+    organization=org, statement=stuck, doc_number="S2", date=date(2026, 9, 27),
+    amount="50.00", purpose="уч 1", plot=p, match_kind=BankTransaction.MATCH_MANUAL,
+)
 u = User(username=os.environ["SMOKE_LOGIN"], organization=org, member=m,
          role=User.ROLE_MEMBER, is_active=True, must_change_password=True)
 u.set_password(os.environ["SMOKE_PASSWORD"])

@@ -82,13 +82,22 @@ def build_dashboard(org, today=None):
     if n_fresh:
         n_unknown = fresh.filter(plot__isnull=True).count()
         detail = f"На {_money(fresh.aggregate(s=Sum('amount'))['s'] or ZERO)}."
+        if n_fresh - n_unknown:
+            detail += (f" {n_fresh - n_unknown} можно провести сразу — "
+                       "участок известен.")
         if n_unknown:
             detail += (f" У {n_unknown} {_plural(n_unknown, 'строки', 'строк', 'строк')} "
-                       "участок не определился — укажите вручную.")
+                       "участок не определился — укажите его или пропустите строку, "
+                       "если это не взнос.")
+        # Сразу в ту выписку, где ждут строки (самую старую из таких), —
+        # иначе непонятно, какую из загруженных открывать.
+        oldest = fresh.order_by("statement__created_at").values_list(
+            "statement_id", flat=True).first()
         todo.append({
             "key": "statement", "level": "attention",
             "title": f"В выписке {n_fresh} {_plural(n_fresh, 'непроведённая строка', 'непроведённые строки', 'непроведённых строк')}",
-            "detail": detail, "action": "Провести выписку", "to": "/statements",
+            "detail": detail, "action": "Провести выписку",
+            "to": f"/statements?open={oldest}",
         })
 
     # ── показания за прошлый месяц ──
