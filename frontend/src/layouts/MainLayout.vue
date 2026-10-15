@@ -4,12 +4,15 @@
       <q-toolbar class="snt-toolbar">
         <q-btn flat dense round icon="menu" @click="drawer = !drawer" class="q-mr-sm" />
 
-        <div class="snt-logo row items-center no-wrap q-mr-md gt-xs">
+        <div class="snt-logo row items-center no-wrap gt-xs">
           <q-icon name="park" size="22px" class="q-mr-xs" style="color:rgba(255,255,255,0.85)" />
           <span class="text-weight-bold" style="font-size:15px;letter-spacing:0.02em">СНТ Платформа</span>
+          <span class="snt-title-sep">/</span>
         </div>
 
-        <div class="snt-page-title lt-sm">{{ pageTitle }}</div>
+        <!-- Название страницы — только здесь, на любой ширине экрана.
+             На самих страницах заголовок не дублируется. -->
+        <div class="snt-page-title ellipsis">{{ pageTitle }}</div>
 
         <q-space />
 
@@ -36,9 +39,6 @@
             class="q-mr-xs text-caption"
           />
         </template>
-
-        <!-- Текущая страница (только md+) -->
-        <div class="text-body2 q-mr-md gt-sm" style="opacity:0.75">{{ pageTitle }}</div>
 
         <q-btn flat dense round icon="account_circle" @click="profileMenu = true">
           <q-tooltip>{{ user?.full_name || user?.username }}</q-tooltip>
@@ -187,7 +187,7 @@
     <!-- Профиль диалог -->
     <q-dialog v-model="profileMenu" position="top">
       <q-card style="min-width: 300px">
-        <q-card-section class="bg-green-8 text-white">
+        <q-card-section class="bg-primary text-white">
           <div class="text-h6">{{ user?.full_name || user?.username }}</div>
           <div class="text-caption">{{ roleLabel }} · {{ auth.selectedOrgName || user?.organization_name }}</div>
         </q-card-section>
@@ -202,14 +202,14 @@
     <!-- Диалог выбора организации (суперадмин) -->
     <q-dialog v-model="orgDialog" persistent>
       <q-card style="min-width: 380px; max-width: 480px">
-        <q-card-section class="bg-green-8 text-white row items-center">
+        <q-card-section class="bg-primary text-white row items-center">
           <q-icon name="home_work" size="24px" class="q-mr-sm" />
           <span class="text-h6">Выбор организации (СНТ)</span>
         </q-card-section>
 
         <q-card-section>
           <div v-if="orgsLoading" class="text-center q-pa-md">
-            <q-spinner color="green-8" size="32px" />
+            <q-spinner color="primary" size="32px" />
           </div>
 
           <q-list separator v-else-if="orgs.length">
@@ -299,6 +299,7 @@ const pageTitles = {
   '/organization': 'Товарищество',
   '/setup': 'Новое садоводство',
   '/budget': 'Смета и расходы',
+  '/statements': 'Банковская выписка',
 }
 const pageTitle = computed(() => pageTitles[route.path] || 'СНТ Платформа')
 

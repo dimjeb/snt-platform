@@ -1,8 +1,7 @@
 <template>
   <q-page class="q-pa-md">
-    <div class="text-h6 q-mb-md">Электроэнергия</div>
 
-    <q-tabs v-model="tab" dense align="left" class="q-mb-md" active-color="orange-8" indicator-color="orange-8">
+    <q-tabs v-model="tab" dense align="left" class="q-mb-md" active-color="primary" indicator-color="primary">
       <q-tab name="meters" label="Счётчики" />
       <q-tab name="readings" label="Показания" />
       <q-tab name="tariffs" label="Тарифы" />
@@ -148,6 +147,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useQuasar } from 'quasar'
 import api from 'src/api/client'
+import { rub } from 'src/utils/money'
 import ExcelImportDialog from 'components/ExcelImportDialog.vue'
 
 const $q = useQuasar()
@@ -278,7 +278,7 @@ async function saveMeter() {
     if (!debtTarget.value.isMain && debtTarget.value.plot && Number(f.opening_debt) > 0) {
       body.opening_debt = f.opening_debt
     }
-    const debtNote = body.opening_debt ? `, долг ${body.opening_debt} ₽ начислен` : ''
+    const debtNote = body.opening_debt ? `, долг ${rub(body.opening_debt)} начислен` : ''
     if (openingFor.value) {
       await api.post(`/electricity/meters/${openingFor.value.id}/opening/`, body)
     } else {

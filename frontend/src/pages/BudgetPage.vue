@@ -1,14 +1,13 @@
 <template>
   <q-page class="q-pa-md">
     <div class="row items-center q-gutter-sm q-mb-md">
-      <div class="text-h6">Смета и расходы</div>
       <q-space />
       <q-select v-model="year" :options="yearOptions" dense outlined emit-value map-options
                 label="Год" style="min-width:120px" @update:model-value="loadBudget" />
       <q-btn outline color="primary" icon="add" label="Новая смета" @click="openNewBudget" />
     </div>
 
-    <q-tabs v-model="tab" dense align="left" active-color="green-8" indicator-color="green-8"
+    <q-tabs v-model="tab" dense align="left" active-color="primary" indicator-color="primary"
             class="q-mb-md" no-caps>
       <q-tab name="budget" label="Смета" />
       <q-tab name="expenses" label="Расходы" />
@@ -285,6 +284,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useQuasar } from 'quasar'
 import api from 'src/api/client'
+import { rub as money } from 'src/utils/money'
 import { useAuthStore } from 'stores/auth'
 
 const $q = useQuasar()
@@ -319,10 +319,6 @@ const yearOptions = computed(() => {
 const itemOptions = computed(() => (budget.value?.items || [])
   .map((i) => ({ label: i.name, value: i.id })))
 
-function money(v) {
-  if (v === null || v === undefined || v === '') return '—'
-  return Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₽'
-}
 function fmtDate(v) { return v ? v.split('-').reverse().join('.') : '' }
 function calcText(i) {
   if (i.quantity === null || i.unit_price === null) return '—'

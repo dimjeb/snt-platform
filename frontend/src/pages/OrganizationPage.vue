@@ -1,6 +1,5 @@
 <template>
   <q-page padding>
-    <div class="text-h6 q-mb-md">Товарищество</div>
 
     <q-card flat bordered style="max-width:560px">
       <q-card-section>

@@ -7,7 +7,7 @@
           <q-icon name="park" size="52px" color="white" />
         </div>
         <h1 class="login-brand-title">СНТ Платформа</h1>
-        <p class="login-brand-sub">Управление садоводческим товариществом</p>
+        <p class="login-brand-sub">Кабинет садовода и правления товарищества</p>
 
         <div class="login-features">
           <div class="login-feature" v-for="f in features" :key="f.icon">
@@ -22,19 +22,19 @@
     <div class="login-right">
       <!-- Мобильный логотип -->
       <div class="login-mobile-header lt-md">
-        <q-icon name="park" size="36px" color="green-8" />
-        <div class="text-h6 text-green-8 q-mt-xs">СНТ Платформа</div>
-        <div class="text-caption text-grey-6">Управление садоводческим товариществом</div>
+        <q-icon name="park" size="36px" color="primary" />
+        <div class="text-h6 text-primary q-mt-xs">СНТ Платформа</div>
+        <div class="text-caption text-grey-7">Кабинет садовода и правления</div>
       </div>
 
       <q-card class="login-card" flat>
         <q-card-section class="q-pb-none q-pt-md">
-          <div class="text-h6 gt-sm">Вход в систему</div>
-          <div class="text-caption text-grey-6 gt-sm q-mb-md">Введите ваши учётные данные</div>
+          <div class="text-h6">Вход</div>
+          <div class="text-caption text-grey-7">Логин и пароль выдаёт правление товарищества</div>
         </q-card-section>
 
         <q-card-section class="q-pt-sm">
-          <q-form @submit.prevent="onLogin" class="q-gutter-md">
+          <q-form @submit.prevent="onLogin" class="login-form">
             <q-input
               v-model="username"
               label="Логин"
@@ -68,7 +68,7 @@
               type="submit"
               color="primary"
               label="Войти"
-              class="full-width q-py-sm"
+              class="full-width q-py-sm q-mt-sm"
               :loading="loading"
               unelevated
             />
@@ -80,12 +80,12 @@
                логин и временный пароль, чаще всего непонятно не как
                нажать «Войти», а что делать дальше. -->
           <q-btn
-            flat dense no-caps color="primary" icon="help_outline"
+            flat dense color="primary" icon="help_outline"
             label="Инструкция: как пользоваться сайтом"
             to="/help"
           />
-          <div class="text-caption text-grey-5 q-mt-sm">
-            Забыли пароль? Обратитесь к председателю СНТ
+          <div class="text-caption text-grey-7 q-mt-sm">
+            Забыли пароль? Новый выдаст председатель или казначей.
           </div>
         </q-card-section>
       </q-card>
@@ -108,10 +108,10 @@ const loading = ref(false)
 const errorMsg = ref('')
 
 const features = [
-  { icon: 'people',       text: 'Учёт членов и участков' },
-  { icon: 'receipt_long', text: 'Начисления и платежи' },
-  { icon: 'bolt',         text: 'Учёт электроэнергии' },
-  { icon: 'bar_chart',    text: 'Отчёты в Excel' },
+  { icon: 'receipt_long', text: 'Сколько вы должны и за что' },
+  { icon: 'qr_code_2',    text: 'Оплата по QR из своего банка' },
+  { icon: 'speed',        text: 'Показания счётчика с телефона' },
+  { icon: 'groups',       text: 'Правлению: реестр, выписка, смета, отчёты' },
 ]
 
 // Одно «Ошибка сервера. Попробуйте позже.» на все случаи, кроме 401,
@@ -232,8 +232,14 @@ async function onLogin() {
 }
 
 /* Правая панель */
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .login-right {
-  width: 420px;
+  width: 460px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -256,11 +262,12 @@ async function onLogin() {
 }
 
 /* Мобиль: одна колонка */
-@media (max-width: 768px) {
+@media (max-width: 1023px) {
   .login-page { justify-content: center; align-items: center; background: #f5f5f5; }
   .login-right {
     width: 100%;
     padding: 24px 16px;
+    background: transparent;
   }
   .login-card {
     max-width: 400px;
@@ -269,5 +276,6 @@ async function onLogin() {
 
 /* Тёмная тема */
 .body--dark .login-right { background: #1a1a1a; }
+.body--dark .login-page  { background: #121212; }
 .body--dark .login-card  { background: #2a2a2a !important; box-shadow: 0 2px 20px rgba(0,0,0,0.4); }
 </style>

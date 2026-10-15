@@ -1,0 +1,1 @@
+function e(e){let t=Number(e);return Number.isFinite(t)?t:0}function t(t){let n=e(t),r=Math.round(Math.abs(n)*100)%100!=0;return n.toLocaleString(`ru-RU`,{minimumFractionDigits:r?2:0,maximumFractionDigits:2})}function n(e){return e==null||e===``?`—`:`${t(e)} ₽`}export{n,t};

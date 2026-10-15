@@ -40,7 +40,12 @@ body {
 .snt-page-title {
   font-size: 16px;
   font-weight: 500;
-  opacity: 0.9;
+  min-width: 0;
+}
+.snt-title-sep {
+  margin: 0 10px;
+  opacity: 0.5;
+  font-weight: 400;
 }
 
 // ── Боковая панель ──
@@ -197,4 +202,12 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 8px;
+}
+
+// ── Списки людей ──
+.member-avatar {
+  background: rgba(45, 106, 79, 0.12);
+  color: var(--q-primary);
+  font-size: 15px;
+  font-weight: 500;
 }

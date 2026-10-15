@@ -8,7 +8,7 @@
   <div class="change-password-page">
     <div class="change-password-card">
       <q-card flat bordered>
-        <q-card-section class="bg-green-8 text-white">
+        <q-card-section class="bg-primary text-white">
           <div class="row items-center no-wrap">
             <q-icon name="lock_reset" size="32px" class="q-mr-md" />
             <div>

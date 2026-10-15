@@ -1,9 +1,8 @@
 <template>
   <q-page class="q-pa-md">
     <div class="row items-center q-mb-md">
-      <div class="text-h6">Участки</div>
       <q-space />
-      <q-btn icon="add" color="primary" round flat @click="openCreate" />
+      <q-btn icon="add" color="primary" unelevated label="Добавить" @click="openCreate" />
     </div>
 
     <q-input v-model="search" outlined dense placeholder="Поиск по номеру, кадастру..." class="q-mb-md" clearable>
@@ -12,7 +11,7 @@
 
     <q-list separator bordered rounded>
       <q-item v-if="loading">
-        <q-item-section class="text-center"><q-spinner color="green-8" /></q-item-section>
+        <q-item-section class="text-center"><q-spinner color="primary" /></q-item-section>
       </q-item>
 
       <q-item v-for="p in plots" :key="p.id" clickable v-ripple @click="openDetail(p)">
@@ -46,7 +45,7 @@
     <!-- Диалог создания/редактирования -->
     <q-dialog v-model="dialog" persistent>
       <q-card style="min-width: 360px; max-width: 480px">
-        <q-card-section class="bg-blue-8 text-white">
+        <q-card-section class="bg-primary text-white">
           <div class="text-h6">{{ editMode ? 'Редактировать участок' : 'Новый участок' }}</div>
         </q-card-section>
         <q-card-section class="q-gutter-sm">
@@ -96,7 +95,7 @@
             @filter="filterMembers"
             @clear="form.owners = []"
           >
-            <template #prepend><q-icon name="person" color="green-8" /></template>
+            <template #prepend><q-icon name="person" color="primary" /></template>
             <template #no-option>
               <q-item>
                 <q-item-section class="text-grey-6">Членов не найдено</q-item-section>
@@ -105,7 +104,7 @@
             <template #option="scope">
               <q-item v-bind="scope.itemProps">
                 <q-item-section avatar>
-                  <q-icon name="person" color="green-8" />
+                  <q-icon name="person" color="primary" />
                 </q-item-section>
                 <q-item-section>
                   <q-item-label>{{ scope.opt.full_name }}</q-item-label>
@@ -127,14 +126,14 @@
     <!-- Детали участка -->
     <q-dialog v-model="detailDialog">
       <q-card style="min-width: 340px; max-width: 480px" v-if="selected">
-        <q-card-section class="bg-blue-8 text-white">
+        <q-card-section class="bg-primary text-white">
           <div class="text-h6">Участок №{{ selected.number }}</div>
           <div class="text-caption">{{ selected.area_sotok ? selected.area_sotok + ' соток' : '' }}</div>
         </q-card-section>
         <q-card-section>
           <q-list dense>
             <q-item>
-              <q-item-section side><q-icon name="person" color="blue-8" /></q-item-section>
+              <q-item-section side><q-icon name="person" color="primary" /></q-item-section>
               <q-item-section>
                 <q-item-label overline>
                   {{ (selected.current_owners?.length || 0) > 1 ? 'Собственники' : 'Владелец' }}
@@ -147,7 +146,7 @@
               </q-item-section>
             </q-item>
             <q-item v-if="selected.cadastral_number">
-              <q-item-section side><q-icon name="article" color="blue-8" /></q-item-section>
+              <q-item-section side><q-icon name="article" color="primary" /></q-item-section>
               <q-item-section>
                 <q-item-label overline>Кадастровый номер</q-item-label>
                 <q-item-label>{{ selected.cadastral_number }}</q-item-label>

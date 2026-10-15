@@ -1,6 +1,5 @@
 <template>
   <q-page class="q-pa-md">
-    <div class="text-h6 q-mb-md">Показания счётчика</div>
 
     <q-card flat bordered class="q-mb-md" v-if="myMeter">
       <q-card-section>
