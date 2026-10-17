@@ -17,6 +17,15 @@ const routes = [
     meta: { public: true },
   },
   {
+    // Руководство администратора — только администратору платформы.
+    // Текст не вшит в сборку (её скачивает любой посетитель), а приходит
+    // с сервера после проверки прав: GET /api/admin-guide/.
+    path: '/admin-guide',
+    component: () => import('pages/HelpPage.vue'),
+    props: { remote: '/admin-guide/', title: 'Руководство администратора' },
+    meta: { requiresAuth: true, roles: ['superadmin'] },
+  },
+  {
     // Вне MainLayout: пока пароль временный, показывать меню разделов
     // бессмысленно — API на них всё равно отвечает 403.
     path: '/change-password',
