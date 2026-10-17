@@ -456,6 +456,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("РАЗОВОЕ НАЧИСЛЕНИЕ"))
         self._check_one_off_charge(c, CH, ME)
 
+        # ---------------- Руководство администратора ----------------
+        self.stdout.write(self.style.MIGRATE_HEADING("РУКОВОДСТВО АДМИНИСТРАТОРА"))
+        self._check_admin_guide(c, AD, CH, ME)
+
         # ---------------- Электроэнергия ----------------
         self.stdout.write(self.style.MIGRATE_HEADING("ЭЛЕКТРОЭНЕРГИЯ"))
         self._check_electricity_gaps()
@@ -2113,6 +2117,21 @@ class Command(BaseCommand):
         self.verify("кабинет садовода отдаёт «за что» по каждому начислению",
                     r.status_code == 200 and bool(items) and all("description" in i for i in items),
                     f"HTTP {r.status_code}, строк {len(items)}")
+
+    def _check_admin_guide(self, c, admin_headers, chairman_headers, member_headers):
+        """Команды сервера видны только администратору платформы."""
+        r = c.get("/api/admin-guide/", **admin_headers)
+        text = (self._json(r) or {}).get("markdown", "")
+        self.verify("администратору платформы руководство отдаётся",
+                    r.status_code == 200 and "Выкатить обновление" in text,
+                    f"HTTP {r.status_code}")
+        for who, headers in (("председателю", chairman_headers), ("члену СНТ", member_headers)):
+            r = c.get("/api/admin-guide/", **headers)
+            self.verify(f"{who} руководство администратора не отдаётся",
+                        r.status_code == 403, f"HTTP {r.status_code}")
+        r = c.get("/api/admin-guide/")
+        self.verify("без входа руководство администратора не отдаётся",
+                    r.status_code == 401, f"HTTP {r.status_code}")
 
     def _check_security_holes(self, c, chairman_headers):
         """

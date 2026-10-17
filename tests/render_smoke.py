@@ -662,6 +662,12 @@ with sync_playwright() as pw:
         mobile.wait_for_timeout(600)
         verify("реквизит копируется одним нажатием",
                "Счёт: скопировано" in body_text(mobile), "")
+    mobile.goto(f"{BASE}/help", wait_until="networkidle")
+    mobile.wait_for_timeout(800)
+    member_help = body_text(mobile)
+    verify("садовод видит в инструкции только свой раздел",
+           "Я садовод" in member_help and "Я казначей" not in member_help
+           and "Я председатель" not in member_help, "")
     phone.close()
 
     # 11. Выписка проведена частично: строка с участком, указанным после
@@ -697,6 +703,37 @@ with sync_playwright() as pw:
     verify("строку можно пропустить — она больше не ждёт проведения",
            "Пропущена: проверка" in body_text(page)
            and page.get_by_role("button", name="Вернуть к проведению").count() == 1, "")
+
+    # 11а. Инструкция — для людей, без команд; руководство администратора
+    #      видит только администратор платформы и в сборку сайта не вшито.
+    page.goto(f"{BASE}/help", wait_until="networkidle")
+    page.wait_for_timeout(800)
+    help_text = body_text(page)
+    verify("в инструкции нет консольных команд",
+           all(w not in help_text for w in ("docker", "manage.py", "--dry-run", "/admin/")), "")
+    verify("председатель видит в инструкции свои разделы, но не раздел администратора",
+           "Я председатель" in help_text and "Я казначей" in help_text
+           and "Я администратор платформы" not in help_text, "")
+    page.goto(f"{BASE}/admin-guide", wait_until="networkidle")
+    page.wait_for_timeout(1000)
+    verify("председателя на руководство администратора не пускает",
+           "/admin-guide" not in page.url, page.url)
+    import glob as _glob
+    leaked = [f for f in _glob.glob("frontend/dist/spa/**/*.js", recursive=True)
+              if "create_member_accounts" in open(f, encoding="utf-8", errors="ignore").read()]
+    verify("руководство администратора не вшито в сборку сайта", not leaked, ", ".join(leaked[:2]))
+    adm_ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+    adm2 = adm_ctx.new_page()
+    adm2.goto(f"{BASE}/login", wait_until="networkidle")
+    adm2.locator("input").nth(0).fill(LOGIN + "-admin")
+    adm2.locator("input").nth(1).fill(PASSWORD)
+    adm2.get_by_role("button", name="Войти").click()
+    adm2.wait_for_url("**/dashboard", timeout=15000)
+    adm2.get_by_text("Руководство администратора").first.click()
+    adm2.wait_for_timeout(1500)
+    verify("администратор открывает руководство из меню",
+           "Выкатить обновление" in body_text(adm2), body_text(adm2)[:120])
+    adm_ctx.close()
 
     # 12. Разовое начисление одному участку и удаление ошибочного.
     import re as _re12

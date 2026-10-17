@@ -153,6 +153,10 @@
               <q-item-section avatar><q-icon name="add_business" /></q-item-section>
               <q-item-section>Новое садоводство</q-item-section>
             </q-item>
+            <q-item clickable v-ripple to="/admin-guide" class="snt-nav-item">
+              <q-item-section avatar><q-icon name="menu_book" /></q-item-section>
+              <q-item-section>Руководство администратора</q-item-section>
+            </q-item>
             <q-item
               clickable v-ripple
               tag="a"

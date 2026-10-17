@@ -3,6 +3,7 @@
     <div class="help-bar">
       <div class="help-bar-inner">
         <q-btn flat dense icon="arrow_back" :label="backLabel" @click="goBack" />
+        <div v-if="title" class="q-ml-md text-subtitle1 ellipsis">{{ title }}</div>
         <q-space />
         <q-btn
           flat dense icon="print" label="Распечатать"
@@ -11,20 +12,49 @@
       </div>
     </div>
 
-    <article class="help-body" v-html="html" />
+    <div v-if="loading" class="row justify-center q-pa-xl"><q-spinner color="primary" size="32px" /></div>
+    <div v-else-if="loadError" class="help-body text-negative">{{ loadError }}</div>
+    <article v-else class="help-body" v-html="html" />
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { marked } from 'marked'
 import { useAuthStore } from 'stores/auth'
+import api from 'src/api/client'
+import { filterHelp, visibleSections } from 'src/utils/helpByRole'
 
 // Инструкция читается из того же файла, что лежит в docs/ и правится
 // вместе с кодом. Копии не делаем: две инструкции разъезжаются в первый
 // же месяц, и человек читает ту, которая врёт.
 import source from '../../../docs/Инструкция.md?raw'
+
+// remote — адрес API, откуда взять текст вместо вшитой инструкции:
+// так открывается руководство администратора, которое в сборку не
+// попадает и отдаётся сервером только администратору платформы.
+const props = defineProps({
+  remote: { type: String, default: '' },
+  title: { type: String, default: '' },
+})
+const remoteSource = ref('')
+const loading = ref(!!props.remote)
+const loadError = ref('')
+
+onMounted(async () => {
+  if (!props.remote) return
+  try {
+    const { data } = await api.get(props.remote)
+    remoteSource.value = data.markdown || ''
+  } catch (e) {
+    loadError.value = e.response?.status === 403
+      ? 'Эта страница доступна только администратору платформы.'
+      : 'Не удалось загрузить руководство.'
+  } finally {
+    loading.value = false
+  }
+})
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -56,8 +86,24 @@ renderer.heading = function ({ tokens, depth }) {
   return `<h${depth} id="${slug(this.parser.parseInline(tokens, this.parser.textRenderer))}">${text}</h${depth}>\n`
 }
 
+// После входа — только разделы для роли человека; до входа роль
+// неизвестна, показываем всё, кроме раздела администратора платформы.
+const ownSource = computed(() => {
+  const visible = visibleSections({
+    authenticated: auth.isAuthenticated,
+    role: auth.user?.role,
+    hasOwnCabinet: auth.hasOwnCabinet,
+  })
+  let text = filterHelp(source, visible)
+  if (auth.isAuthenticated) {
+    text = text.replace('Сначала найдите свой раздел:', 'Здесь — разделы для вас:')
+  }
+  return text
+})
+
 const html = computed(() =>
-  marked.parse(source, { renderer, gfm: true, breaks: false }),
+  marked.parse(props.remote ? remoteSource.value : ownSource.value,
+    { renderer, gfm: true, breaks: false }),
 )
 </script>
 
